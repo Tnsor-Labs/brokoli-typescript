@@ -91,7 +91,8 @@ try {
   } else if (command === "cancel") {
     console.log(JSON.stringify(await (await client()).runHandle(argv[0]).cancel(), null, 2));
   } else if (command === "retry") {
-    console.log(JSON.stringify(await (await client()).retry(argv[0]), null, 2));
+    // retry() returns a handle for the NEW run the server created.
+    console.log((await (await client()).retry(argv[0])).id);
   } else if (command === "backfill") {
     const start = flag("--start");
     const end = flag("--end");

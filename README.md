@@ -86,6 +86,24 @@ for itself: its first run caught a node-id divergence (`read_a_1` vs
 `reada_1`) and a hook-normalization gap, and exposed a branching footgun
 in the Python SDK itself.
 
+## Integration tests
+
+`tests/integration/` exercises the client end to end against a live
+server: capabilities, deploy (create and update-in-place), run/wait,
+logs, node runs, cancel, retry/resume, interval-native backfill, and
+run-scoped node previews. The suite activates when `BROKOLI_SERVER` is
+set and skips otherwise; its file-node fixtures assume the server
+shares the local filesystem (a dev/demo instance):
+
+```sh
+BROKOLI_SERVER=http://localhost:8090 \
+BROKOLI_USERNAME=admin BROKOLI_PASSWORD=... bun test tests/integration
+```
+
+Every pipeline it deploys carries a unique `ts-itest-*` id and is
+deleted afterwards. Credentials also resolve from `BROKOLI_TOKEN` or
+the shared credentials file when username/password are not set.
+
 ## Development
 
 ```sh
