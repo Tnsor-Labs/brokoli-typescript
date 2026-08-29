@@ -1,0 +1,13 @@
+{
+  "name": "brokoli",
+  "version": "0.1.0",
+  "description": "Brokoli TypeScript SDK: compile declarative pipelines to Brokoli IR",
+  "type": "module",
+  "bin": { "brokoli": "./src/cli.ts" },
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": { "@types/bun": "latest", "typescript": "latest" }
+}
