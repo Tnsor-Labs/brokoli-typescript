@@ -262,6 +262,21 @@ export class Pipeline {
     if (this.edges.filter((e) => e.to === from.nodeId).length !== 1) {
       throw new PipelineError("Condition must have exactly one input");
     }
+    // The chain footgun (brokoli-sdk#81, same shape here): then() returns
+    // its target, so when(a.then(b)) hands us b -- the branch edge would
+    // land on the chain's tail and leave a with no input, silently. A
+    // branch target that already has inputs is never what the author
+    // meant, so refuse anything fed by nodes other than this gate.
+    const fedFrom = [...new Set(this.edges.filter((e) => e.to === to.nodeId && e.from !== from.nodeId).map((e) => e.from))].sort();
+    if (fedFrom.length) {
+      throw new PipelineError(
+        `Condition branch target ${to.nodeId} already has input(s) from ${fedFrom.join(", ")}. ` +
+          "If you passed a then() chain to when()/otherwise(), note that then() returns its target, " +
+          "so the branch would route to the chain's tail and leave its head unconnected. " +
+          "Route to the branch's entry node and chain from it instead: " +
+          "gate.when(shaped); shaped.then(sink).",
+      );
+    }
     this.edge(from, to, condition);
   }
 
