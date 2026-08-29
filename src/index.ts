@@ -148,12 +148,12 @@ export type ClientOptions = { apiKey?: string; username?: string; password?: str
 export class Run {
   constructor(readonly client: Client, readonly id: string) {}
   detail() { return this.client.request(`/api/runs/${encodeURIComponent(this.id)}`); }
-  status() { return this.client.request(`/api/runs/${encodeURIComponent(this.id)}`); }
+  async status() { return String((await this.detail()).status || ""); }
   async statusText() { return String((await this.detail()).status || ""); }
   async nodeRuns() { return (await this.detail()).node_runs || []; }
-  logs() { return this.client.request(`/api/runs/${encodeURIComponent(this.id)}/logs`); }
-  cancel() { return this.client.request(`/api/runs/${encodeURIComponent(this.id)}/cancel`, { method: "POST" }); }
-  async wait(options: { timeout?: number; pollInterval?: number; raiseOnFailure?: boolean } = {}) { const deadline = Date.now() + (options.timeout ?? 3600) * 1000; let detail: any = {}; while (Date.now() < deadline) { detail = await this.status(); if (TERMINAL_RUN_STATUSES.has(detail.status)) { if (options.raiseOnFailure && ["failed"].includes(detail.status)) throw new APIError(`Run ${this.id} failed`, 0, detail); return detail; } await new Promise(resolve => setTimeout(resolve, (options.pollInterval ?? 1) * 1000)); } throw new Error(`Timed out waiting for run ${this.id} (last status: ${detail.status || "unknown"})`); }
+  async logs(options: { level?: string; node?: string } = {}) { const query = new URLSearchParams(); if (options.level) query.set("level", options.level); if (options.node) query.set("node_id", options.node); const body = await this.client.request(`/api/runs/${encodeURIComponent(this.id)}/logs${query.size ? `?${query}` : ""}`); return Array.isArray(body) ? body : body.logs || body.items || []; }
+  cancel() { return this.client.request(`/api/runs/${encodeURIComponent(this.id)}/cancel`, { method: "POST", body: JSON.stringify({}) }); }
+  async wait(options: { timeout?: number; pollInterval?: number; raiseOnFailure?: boolean } = {}) { const deadline = Date.now() + (options.timeout ?? 3600) * 1000; let detail: any = {}; while (Date.now() < deadline) { detail = await this.detail(); if (TERMINAL_RUN_STATUSES.has(detail.status)) { if (options.raiseOnFailure && detail.status !== "success") throw new APIError(`Run ${this.id} failed`, 0, detail); return detail; } await new Promise(resolve => setTimeout(resolve, (options.pollInterval ?? 1) * 1000)); } throw new Error(`Timed out waiting for run ${this.id} (last status: ${detail.status || "unknown"})`); }
 }
 export class Client {
   private token?: string;
