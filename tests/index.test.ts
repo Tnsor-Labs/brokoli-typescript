@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Client, Pipeline, irDigest, renderIR, validatePipeline } from "../src/index";
+import { Client, Connection, Param, Pipeline, cursorPages, irDigest, renderIR, validatePipeline } from "../src/index";
 
 describe("Brokoli TypeScript compiler", () => {
   test("builds the declarative IR with deterministic IDs", async () => {
@@ -19,5 +19,11 @@ describe("Brokoli TypeScript compiler", () => {
   });
   test("rejects invalid credentials configuration", () => {
     expect(() => new Client("http://localhost", { apiKey: "key", username: "u", password: "p" })).toThrow();
+  });
+  test("compiles resources and pagination without leaking objects into IR", () => {
+    const p = new Pipeline("API");
+    const source = p.sourceApi("Fetch", { url: `https://example.test/${new Param("day")}`, connId: new Connection("warehouse"), pagination: cursorPages("meta.next", "cursor").withExecution({ max_concurrency: 2 }) });
+    expect(source.pipeline.toJSON().nodes[0].config).toMatchObject({ conn_id: "warehouse", pagination: { strategy: "cursor", cursor_path: "meta.next" }, execution: { max_concurrency: 2 } });
+    expect(source.pipeline.toJSON().nodes[0].config.url).toContain("${param.day}");
   });
 });
