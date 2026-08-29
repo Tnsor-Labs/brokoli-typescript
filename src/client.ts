@@ -55,6 +55,14 @@ export class Run {
     return (body.logs as unknown[]) || (body.items as unknown[]) || [];
   }
 
+  /** A node's captured output sample from this run: {columns, rows}.
+   * 404s ("no preview available") until the node has produced one. */
+  preview(nodeId: string): Promise<{ columns: string[]; rows: unknown[] }> {
+    return this.client.request(
+      `/api/runs/${encodeURIComponent(this.id)}/nodes/${encodeURIComponent(nodeId)}/preview`,
+    );
+  }
+
   cancel(): Promise<unknown> {
     return this.client.request(`/api/runs/${encodeURIComponent(this.id)}/cancel`, {
       method: "POST",
@@ -269,11 +277,17 @@ export class Client {
     return new Run(this, runId);
   }
 
-  retry(runId: string): Promise<unknown> {
-    return this.request(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+  /** Resume a failed run. The server creates a NEW run that reuses the
+   * old run's successful node outcomes; the returned handle points at
+   * that new run — the old one stays failed. */
+  async retry(runId: string): Promise<Run> {
+    const response = await this.request(`/api/runs/${encodeURIComponent(runId)}/resume`, {
       method: "POST",
       body: JSON.stringify({}),
     });
+    const id = response?.run_id || response?.id || response?.run?.id;
+    if (!id) throw new APIError("Resume response did not contain a run ID", 0, response);
+    return new Run(this, id);
   }
 
   /**
@@ -294,12 +308,6 @@ export class Client {
     });
   }
 
-  preview(pipelineId: string, nodeId: string, input?: unknown): Promise<unknown> {
-    return this.request(
-      `/api/pipelines/${encodeURIComponent(pipelineId)}/nodes/${encodeURIComponent(nodeId)}/preview`,
-      { method: "POST", body: JSON.stringify(input === undefined ? {} : { input }) },
-    );
-  }
 }
 
 /** Log in with username/password and store the token in the shared
