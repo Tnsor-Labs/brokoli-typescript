@@ -7,7 +7,7 @@ describe("Brokoli TypeScript compiler", () => {
     const source = p.sourceFile("Read orders", { path: "/tmp/orders.csv" });
     const cleaned = p.transform("Clean", source, { rules: [{ type: "rename", mapping: { id: "order_id" } }] });
     p.sinkFile("Export", cleaned, { path: "/tmp/out.json", format: "json" });
-    expect(p.toJSON().nodes.map(n => n.id)).toEqual(["readorders_1", "clean_1", "export_1"]);
+    expect(p.toJSON().nodes.map(n => n.id)).toEqual(["read_orders_1", "clean_1", "export_1"]);
     expect(validatePipeline(p).valid).toBe(true);
     expect((await irDigest(p.toJSON())).startsWith("sha256:")).toBe(true);
     expect(renderIR(p.toJSON())).toContain('"pipeline_id": "orders"');
