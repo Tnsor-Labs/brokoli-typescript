@@ -23,10 +23,22 @@ describe("testing helpers", () => {
     expect(() => expectGraph(p).hasNode(b.nodeId)).not.toThrow();
   });
 
+  test("treats an omitted edge condition as a wildcard", () => {
+    const p = new Pipeline("Conditions");
+    const source = p.sourceFile("Input", { path: "in.csv" });
+    const gate = p.conditionNode("Gate", source, "row_count > 0");
+    const target = p.sinkFile("Output", undefined, { path: "out.csv" });
+    gate.when(target);
+    expect(() => expectGraph(p).hasEdge("Gate", "Output")).not.toThrow();
+    expect(() => expectGraph(p).hasEdge("Gate", "Output", true)).not.toThrow();
+    expect(() => expectGraph(p).hasEdge("Gate", "Output", false)).toThrow(/false/);
+  });
+
   test("watch polls a selected run until terminal", async () => {
+    const startedAt = new Date(Date.now() + 60_000).toISOString();
     const responses = [
-      { items: [{ id: "run-1", status: "running", started_at: "2026-01-01" }] },
-      { items: [{ id: "run-1", status: "success", started_at: "2026-01-01" }] },
+      { items: [{ id: "stale", status: "success", started_at: "2020-01-01" }, { id: "run-1", status: "running", started_at: startedAt }] },
+      { items: [{ id: "stale", status: "success", started_at: "2020-01-01" }, { id: "run-1", status: "success", started_at: startedAt }] },
     ];
     const client = {
       pipeline: async () => ({ id: "pipeline-1" }),

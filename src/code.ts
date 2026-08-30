@@ -30,7 +30,7 @@ export function functionSource(fn: Function): string {
     throw new PipelineError("code-node functions must be self-contained source functions; native and bound functions cannot be deployed");
   }
   if (/^class\s/.test(source)) throw new PipelineError("code-node authoring accepts functions, not classes");
-  if (/^(?:async\s+)?[A-Za-z_$][\w$]*\s*\(/.test(source)) {
+  if (/^(?:(?:async|get|set)\s+)?\*?\s*[A-Za-z_$][\w$]*\s*\(/.test(source)) {
     throw new PipelineError("object methods are not deployable function expressions; pass an arrow or function expression instead");
   }
   return source;

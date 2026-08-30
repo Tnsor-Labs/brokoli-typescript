@@ -18,8 +18,9 @@ export class GraphExpectation {
     return this;
   }
   hasEdge(from: string, to: string, condition?: boolean): this {
-    const expected: Edge = { from: this.resolve(from), to: this.resolve(to), ...(condition === undefined ? {} : { condition }) };
-    if (!this.ir.edges.some((edge) => edge.from === expected.from && edge.to === expected.to && edge.condition === expected.condition)) {
+    const expected: Pick<Edge, "from" | "to"> = { from: this.resolve(from), to: this.resolve(to) };
+    if (!this.ir.edges.some((edge) => edge.from === expected.from && edge.to === expected.to
+      && (condition === undefined || edge.condition === condition))) {
       throw new Error(`Expected graph to contain edge ${expected.from} -> ${expected.to}${condition === undefined ? "" : ` (${condition})`}`);
     }
     return this;
@@ -42,6 +43,7 @@ export async function watch(
   pipeline: string,
   options: { timeout?: number; pollInterval?: number; after?: string } = {},
 ): Promise<Record<string, unknown>> {
+  const after = options.after ?? new Date().toISOString();
   const target = await client.pipeline(pipeline);
   const deadline = Date.now() + (options.timeout ?? 600) * 1000;
   const terminal = new Set(["success", "succeeded", "failed", "cancelled", "canceled", "blocked"]);
@@ -51,7 +53,7 @@ export async function watch(
     const items = (Array.isArray(body) ? body : body.items || body.runs || []) as Array<Record<string, unknown>>;
     const match = selectedId
       ? items.find((run) => run.id === selectedId)
-      : items.find((run) => !options.after || String(run.started_at || "") > options.after);
+      : items.find((run) => String(run.started_at || "") > after);
     if (match) {
       selectedId = String(match.id || "");
       if (terminal.has(String(match.status || ""))) return match;

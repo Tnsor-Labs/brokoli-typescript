@@ -40,6 +40,22 @@ strings may use the wrapper names `rows`, `rowsStream`, `columns`,
 `config`, `params`, `emit`, `begin_emit`, and `output_data`; the names
 remain snake_case because they are a cross-language protocol contract.
 
+TypeScript and streaming code nodes fail closed when a server omits
+`supported_execution_features`; such a server cannot prove support for
+`code-typescript` or `code-streaming-emit`. This intentionally differs
+from Python SDK 0.8.0, which still permits streaming emit against legacy
+capability responses. No released server currently advertises these
+features, so TypeScript code-node deployment remains release-ordered
+behind the core runtime. Wrapper contract v1 is also matched exactly;
+compatible-version ranges can replace that conservative check when a v2
+contract exists.
+
+The v1 `sensor` generator currently sleeps with `Atomics.wait`, which
+requires `Atomics` and `SharedArrayBuffer` in the VM context. Core's JS
+wrapper ADR must either guarantee those globals or provide a fixed
+`sleep(ms)` namespace function, and the real-wrapper contract suite must
+cover the chosen behavior before B1 is release-complete.
+
 Branching routes explicitly — `gate.when(target)` marks the condition
 edge, then chain from the target:
 
@@ -90,6 +106,11 @@ without opening it.
 | `src/device.ts` | device authorization and polling |
 | `src/testing.ts` | graph assertions, run snapshots, watch, live harness |
 | `schema/pipeline-ir-2.1.json` | pinned canonical IR schema used before semantic validation |
+
+`expectGraph(pipeline).hasEdge(from, to)` accepts any edge condition;
+pass `true` or `false` as the third argument to assert a specific branch.
+`watch()` ignores runs started before it was called by default. Pass an
+explicit `after` timestamp when coordinating against an earlier trigger.
 
 ## Parity with the Python SDK
 

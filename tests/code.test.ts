@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Client, Pipeline, filterScript, mapScript, sensorScript, sinkScript, sourceScript, taskScript, validateScript } from "../src";
+import { Client, Pipeline, filterScript, functionSource, mapScript, sensorScript, sinkScript, sourceScript, taskScript, validateScript } from "../src";
 
 type ContractResult = { output: unknown; emitted: unknown[]; emitColumns?: string[] };
 
@@ -52,11 +52,18 @@ describe("TypeScript code-node authoring", () => {
     expect(sensed.output).toEqual({ columns: [], rows: [] });
   });
 
-  test("rejects native and bound functions", () => {
+  test("rejects native, bound, and object-method functions", () => {
     const p = new Pipeline("Functions");
     expect(() => p.task("Native", undefined, Math.max as never)).toThrow(/native and bound/);
     const bound = ((rows: unknown[]) => ({ columns: [], rows })).bind(null);
     expect(() => p.task("Bound", undefined, bound as never)).toThrow(/native and bound/);
+    const methods = {
+      get value() { return true; },
+      *generate() { yield true; },
+    };
+    const getter = Object.getOwnPropertyDescriptor(methods, "value")!.get!;
+    expect(() => functionSource(getter)).toThrow(/object methods/);
+    expect(() => functionSource(methods.generate)).toThrow(/object methods/);
   });
 
   test("gates TypeScript and streaming by exact feature names", async () => {

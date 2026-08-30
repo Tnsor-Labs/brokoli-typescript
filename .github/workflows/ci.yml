@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Tnsor-Labs/brokoli-sdk
+          ref: 5468b6c1bca12efda4c885bc030da5eed4d23635 # v0.8.0
           path: brokoli-sdk
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
