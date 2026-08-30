@@ -52,6 +52,14 @@ describe("TypeScript code-node authoring", () => {
     expect(sensed.output).toEqual({ columns: [], rows: [] });
   });
 
+  test("accepts arrow and function-expression sources", () => {
+    const p = new Pipeline("Functions");
+    expect(() => p.task("Arrow", undefined, (rows) => ({ columns: [], rows }))).not.toThrow();
+    expect(() => p.task("Async arrow", undefined, async (rows) => ({ columns: [], rows }))).not.toThrow();
+    expect(() => p.task("Named expression", undefined, function named(rows) { return { columns: [], rows }; })).not.toThrow();
+    expect(() => p.task("Anonymous expression", undefined, function (rows) { return { columns: [], rows }; })).not.toThrow();
+  });
+
   test("rejects native, bound, and object-method functions", () => {
     const p = new Pipeline("Functions");
     expect(() => p.task("Native", undefined, Math.max as never)).toThrow(/native and bound/);
@@ -59,10 +67,12 @@ describe("TypeScript code-node authoring", () => {
     expect(() => p.task("Bound", undefined, bound as never)).toThrow(/native and bound/);
     const methods = {
       get value() { return true; },
+      set value(_next: boolean) {},
       *generate() { yield true; },
     };
-    const getter = Object.getOwnPropertyDescriptor(methods, "value")!.get!;
-    expect(() => functionSource(getter)).toThrow(/object methods/);
+    const valueDescriptor = Object.getOwnPropertyDescriptor(methods, "value")!;
+    expect(() => functionSource(valueDescriptor.get!)).toThrow(/object methods/);
+    expect(() => functionSource(valueDescriptor.set!)).toThrow(/object methods/);
     expect(() => functionSource(methods.generate)).toThrow(/object methods/);
   });
 
