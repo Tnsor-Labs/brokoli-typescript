@@ -69,6 +69,47 @@ live("live server integration", () => {
     expect(Array.isArray(caps.supportedExecutionFeatures)).toBe(true);
   });
 
+  test("TypeScript task is refused honestly or runs end to end when advertised", async () => {
+    writeFileSync(join(dir, "typescript-in.csv"), "id,amt\n1,4\n");
+    const p = new Pipeline("TS itest code", { pipelineId: pid("typescript-code") });
+    const rows = p.sourceFile("Read", { path: join(dir, "typescript-in.csv"), format: "csv" });
+    const shaped = p.task("Shape", rows, (input) => ({
+      columns: ["id", "total"],
+      rows: input.map((row) => ({ id: row.id, total: Number(row.amt) * 2 })),
+    }));
+    shaped.then(p.sinkFile("Write", undefined, { path: join(dir, "typescript-out.csv"), format: "csv" }));
+
+    const caps = await client.capabilities();
+    if (!caps.supportedExecutionFeatures?.includes("code-typescript")) {
+      await expect(client.preflight(p)).rejects.toThrow(/code-typescript/);
+      return;
+    }
+
+    await deploy(p);
+    const run = await client.run(pid("typescript-code"));
+    const detail = await run.wait({ timeout: 60, raiseOnFailure: true });
+    expect(detail.status).toBe("success");
+    expect(readFileSync(join(dir, "typescript-out.csv"), "utf8")).toContain("8");
+  }, 90000);
+
+  test("TypeScript code reports a memory ceiling breach", async () => {
+    const caps = await client.capabilities();
+    if (!caps.supportedExecutionFeatures?.includes("code-typescript")) return;
+
+    const p = new Pipeline("TS itest code limit", { pipelineId: pid("typescript-limit") });
+    const rows = p.sourceFile("Read", { path: join(dir, "typescript-in.csv"), format: "csv" });
+    p.code("Balloon", rows, {
+      language: "typescript",
+      maxMemoryMb: 32,
+      timeout: 30,
+      script: "const held = []; while (true) held.push(new Array(100000).fill('x'));",
+    });
+    await deploy(p);
+    const detail = await (await client.run(pid("typescript-limit"))).wait({ timeout: 60 });
+    expect(detail.status).toBe("failed");
+    expect(JSON.stringify(detail)).toMatch(/memory|heap|max_memory/i);
+  }, 90000);
+
   test("deploy creates, redeploy updates in place (no duplicate)", async () => {
     const p = new Pipeline("TS itest deploy", { pipelineId: pid("deploy") });
     const rows = p.sourceFile("Read", { path: join(dir, "in.csv"), format: "csv" });

@@ -1,9 +1,9 @@
 # Brokoli TypeScript SDK
 
 Bun-first TypeScript compiler and client for Brokoli's declarative
-pipeline IR. It is intentionally a compiler, not a runtime bridge:
-code-node bodies remain Python/server-side until the server advertises a
-Node runtime. Everything the compiler emits is byte-identical to what
+pipeline IR. TypeScript code nodes are capability-gated: the SDK emits
+them only as `language: "typescript"` and deployment requires a server
+advertising `code-typescript`. Everything the compiler emits is byte-identical to what
 the Python SDK emits for the same pipeline — enforced by a differential
 oracle, not by convention.
 
@@ -20,6 +20,25 @@ const clean = pipeline.transform("Clean", raw, {
 pipeline.sinkFile("Export", clean, { path: "orders.json", format: "json" });
 console.log(pipeline.toJSON());
 ```
+
+Self-contained functions can be authored as TypeScript code nodes. The
+function is serialized into the JS wrapper's fixed namespace; v1 does
+not package closure captures or imports:
+
+```ts
+const shaped = pipeline.task("Shape", raw, (rows) => ({
+  columns: ["id", "total"],
+  rows: rows.map((row) => ({ id: row.id, total: Number(row.amt) * 2 })),
+}));
+```
+
+`source`, `sink`, `filter`, `map`, `validate`, and `sensor` provide the
+Python decorator-equivalent surface as ordinary higher-order methods.
+`filter` and `map` generate against `rowsStream()` plus
+`begin_emit()`/`emit()` so they do not materialize the input. Raw code
+strings may use the wrapper names `rows`, `rowsStream`, `columns`,
+`config`, `params`, `emit`, `begin_emit`, and `output_data`; the names
+remain snake_case because they are a cross-language protocol contract.
 
 Branching routes explicitly — `gate.when(target)` marks the condition
 edge, then chain from the target:
@@ -49,6 +68,11 @@ the credentials file shared with the Python SDK
 XDG- and `BROKOLI_CREDENTIALS`-aware) — a `brokoli auth` login from
 either SDK works in both.
 
+`brokoli auth --server <url>` uses device authorization and stores the
+result in that shared file. Username/password remains available through
+`--username` and `--password`; `--no-browser` prints the confirmation URL
+without opening it.
+
 ## Module map
 
 | Module | Contents |
@@ -62,6 +86,10 @@ either SDK works in both.
 | `src/validate.ts` | client-side pipeline validation |
 | `src/cli.ts` | `compile`/`validate`/`deploy`/`diff`/`run`/`status`/... over IR files |
 | `src/errors.ts` | `PipelineError`, `APIError` |
+| `src/code.ts` | TypeScript function serialization and generated wrapper scripts |
+| `src/device.ts` | device authorization and polling |
+| `src/testing.ts` | graph assertions, run snapshots, watch, live harness |
+| `schema/pipeline-ir-2.1.json` | pinned canonical IR schema used before semantic validation |
 
 ## Parity with the Python SDK
 
@@ -109,5 +137,6 @@ the shared credentials file when username/password are not set.
 ```sh
 bun install
 bun run typecheck
+bun run check:schema
 bun test        # unit + differential (differential needs BROKOLI_PYTHON)
 ```

@@ -45,4 +45,21 @@ describe("Brokoli TypeScript compiler", () => {
     expect(source.pipeline.toJSON().nodes[0].config).toMatchObject({ conn_id: "warehouse", pagination: { strategy: "cursor", cursor_path: "meta.next" }, execution: { max_concurrency: 2 } });
     expect(source.pipeline.toJSON().nodes[0].config.url).toContain("${param.day}");
   });
+  test("schema validation rejects fields the canonical IR does not declare", () => {
+    const p = new Pipeline("Schema");
+    p.sourceFile("Input", { path: "in.csv" });
+    const original = p.toJSON.bind(p);
+    p.toJSON = () => ({ ...original(), invented_field: true }) as never;
+    const result = validatePipeline(p);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((issue) => issue.message.includes("additional properties"))).toBe(true);
+  });
+  test("schema-valid null config returns validation issues instead of throwing", () => {
+    const p = new Pipeline("Null config");
+    p.sourceFile("Input", { path: "in.csv" });
+    const original = p.toJSON.bind(p);
+    p.toJSON = () => ({ ...original(), nodes: [{ ...original().nodes[0], config: null }] }) as never;
+    expect(() => validatePipeline(p)).not.toThrow();
+    expect(validatePipeline(p).valid).toBe(false);
+  });
 });
