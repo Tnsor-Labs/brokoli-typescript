@@ -6,6 +6,7 @@
  */
 
 import { APIError } from "./errors";
+import { JS_WRAPPER_VERSION } from "./code";
 import type { PipelineIR } from "./ir";
 import { requiredExecutionFeatures } from "./ir";
 import { loadToken } from "./credentials";
@@ -16,6 +17,8 @@ export const TERMINAL_RUN_STATUSES = new Set(["success", "succeeded", "failed", 
 export type Capabilities = {
   supportedIrVersions: string[];
   supportedExecutionFeatures?: string[];
+  codeLanguages?: string[];
+  codeJsWrapperVersion?: number;
   raw: Record<string, unknown>;
 };
 
@@ -177,12 +180,14 @@ export class Client {
     if (!Array.isArray(raw.supported_ir_versions) || !raw.supported_ir_versions.length) {
       throw new APIError("Malformed server capabilities", 200, raw);
     }
-    if (raw.supported_execution_features !== undefined && !Array.isArray(raw.supported_execution_features)) {
+    if (raw.supported_execution_features !== undefined && raw.supported_execution_features !== null && !Array.isArray(raw.supported_execution_features)) {
       throw new APIError("Malformed server capabilities", 200, raw);
     }
     return {
       supportedIrVersions: raw.supported_ir_versions,
-      supportedExecutionFeatures: raw.supported_execution_features,
+      supportedExecutionFeatures: raw.supported_execution_features ?? undefined,
+      codeLanguages: raw.code_languages,
+      codeJsWrapperVersion: raw.code_js_wrapper_version,
       raw,
     };
   }
@@ -204,8 +209,9 @@ export class Client {
         caps.raw,
       );
     }
+    const required = requiredExecutionFeatures(ir);
     if (caps.supportedExecutionFeatures) {
-      const missing = requiredExecutionFeatures(ir).filter(
+      const missing = required.filter(
         (feature) => !caps.supportedExecutionFeatures?.includes(feature),
       );
       if (missing.length) {
@@ -215,6 +221,26 @@ export class Client {
           caps.raw,
         );
       }
+    } else {
+      // Legacy servers omitted the feature list, so existing declarative
+      // features retain the Python SDK's compatibility behavior. New code
+      // runtime contracts are different: absence cannot prove that the
+      // language/wrapper exists, and must fail closed.
+      const missing = required.filter((feature) => feature === "code-typescript" || feature === "code-streaming-emit");
+      if (missing.length) {
+        throw new APIError(
+          `Server does not advertise execution feature(s): ${missing.join(", ")}. TypeScript code nodes require an explicit runtime capability; a legacy capability response cannot prove compatibility.`,
+          409,
+          caps.raw,
+        );
+      }
+    }
+    if (required.includes("code-typescript") && caps.codeJsWrapperVersion !== JS_WRAPPER_VERSION) {
+      throw new APIError(
+        `TypeScript code nodes require JS wrapper version ${JS_WRAPPER_VERSION}, but the server advertises ${caps.codeJsWrapperVersion ?? "none"}.`,
+        409,
+        caps.raw,
+      );
     }
     return caps;
   }

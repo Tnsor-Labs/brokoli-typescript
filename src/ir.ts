@@ -181,6 +181,10 @@ export function requiredExecutionFeatures(ir: PipelineIR): string[] {
     if (node.type === "dataset_map") features.add("dataset-map");
     if (node.type === "dataset_filter") features.add("dataset-filter");
     if (node.config.execution) features.add("pagination-checkpoints");
+    if (node.type === "code" && node.config.language === "typescript") features.add("code-typescript");
+    if (node.type === "code" && typeof node.config.script === "string" && /\b(?:emit|begin_emit)\s*\(/.test(node.config.script)) {
+      features.add("code-streaming-emit");
+    }
   }
   if (ir.catchup) features.add("data_intervals");
   return [...features].sort(codePointCompare);

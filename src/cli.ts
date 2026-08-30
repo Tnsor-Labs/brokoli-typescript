@@ -7,6 +7,7 @@
 
 import { readFile } from "node:fs/promises";
 import { Client, login } from "./client";
+import { deviceLogin } from "./device";
 import { canonicalJSON, irDigest, normalizeIR } from "./ir";
 import type { PipelineIR } from "./ir";
 import { diffIR } from "./ir";
@@ -56,9 +57,17 @@ try {
   if (command === "auth") {
     const username = flag("--username");
     const password = flag("--password");
-    if (!username || !password) throw new Error("auth requires --username and --password");
-    await login(server, username, password);
-    console.log(`Token stored for ${server}`);
+    if ((username && !password) || (!username && password)) throw new Error("--username and --password must be used together");
+    if (username && password) {
+      await login(server, username, password);
+      console.log(`Token stored for ${server}`);
+    } else {
+      const noBrowser = argv.includes("--no-browser");
+      await deviceLogin(server, {
+        openBrowser: !noBrowser,
+        echo: (line) => process.stdout.write(`${line}\n`),
+      });
+    }
   } else if (command === "compile" || command === "validate" || command === "deploy" || command === "diff") {
     const file = argv[0] || "pipeline.json";
     const ir = await readIR(file);

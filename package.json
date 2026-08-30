@@ -3,11 +3,22 @@
   "version": "0.1.0",
   "description": "Brokoli TypeScript SDK: compile declarative pipelines to Brokoli IR",
   "type": "module",
-  "bin": { "brokoli": "./src/cli.ts" },
-  "exports": { ".": "./src/index.ts" },
+  "bin": {
+    "brokoli": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:schema": "bun run scripts/check-schema.ts"
   },
-  "devDependencies": { "@types/bun": "latest", "typescript": "latest" }
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0"
+  }
 }

@@ -1,6 +1,10 @@
 /** Local structural validation — the checks that need no server. */
 
+import Ajv2020 from "ajv/dist/2020";
+import schema from "../schema/pipeline-ir-2.1.json";
 import type { Pipeline } from "./pipeline";
+
+const validateSchema = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
 
 export type ValidationIssue = {
   nodeName: string;
@@ -24,6 +28,13 @@ export function validatePipeline(pipeline: Pipeline): ValidationResult {
   const warning = (nodeName: string, field: string, message: string) =>
     warnings.push({ nodeName, field, message, severity: "warning" });
 
+  if (!validateSchema(data)) {
+    for (const issue of validateSchema.errors || []) {
+      const field = issue.instancePath || issue.params.missingProperty || "schema";
+      error("", String(field), `IR schema ${issue.message || "validation failed"}`);
+    }
+  }
+
   if (!data.name) error("", "name", "Pipeline name is required");
   if (!data.nodes.length) error("", "nodes", "Pipeline must have at least one node");
 
@@ -36,7 +47,7 @@ export function validatePipeline(pipeline: Pipeline): ValidationResult {
   }
 
   for (const node of data.nodes) {
-    const c = node.config;
+    const c = node.config || {};
     switch (node.type) {
       case "source_file":
         if (!c.path) error(node.name, "path", "Source File requires a 'path'");
@@ -68,6 +79,12 @@ export function validatePipeline(pipeline: Pipeline): ValidationResult {
         break;
       case "wait":
         if (!c.condition) error(node.name, "condition", "Wait requires a condition (file_exists, http, interval_elapsed, pipeline)");
+        break;
+      case "code":
+        if (!c.script) error(node.name, "script", "Code node requires a script");
+        if (c.language !== undefined && c.language !== "python" && c.language !== "typescript") {
+          error(node.name, "language", "Code language must be python or typescript");
+        }
         break;
     }
   }

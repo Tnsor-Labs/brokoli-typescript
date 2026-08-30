@@ -4,6 +4,30 @@
 
 export { APIError, PipelineError } from "./errors";
 export {
+  JS_WRAPPER_VERSION,
+  filterScript,
+  functionSource,
+  mapScript,
+  sensorScript,
+  sinkScript,
+  sourceScript,
+  taskScript,
+  validateScript,
+} from "./code";
+export type {
+  OutputRows,
+  Row,
+  RowMapper,
+  RowPredicate,
+  SensorFunction,
+  SinkFunction,
+  SourceFunction,
+  TaskFunction,
+  TaskOutput,
+  ValidateFunction,
+  ValidateResult,
+} from "./code";
+export {
   NODE_TYPE_CAPABILITIES,
   canonicalJSON,
   diffIR,
@@ -33,7 +57,11 @@ export {
   offsetPages,
 } from "./pagination";
 export { credentialsPath, forgetToken, loadToken, storeToken } from "./credentials";
+export { deviceLogin, pollForToken, requestDeviceAuthorization } from "./device";
+export type { DeviceGrant, DeviceLoginOptions } from "./device";
 export { Client, Run, TERMINAL_RUN_STATUSES, login } from "./client";
 export type { Capabilities, ClientOptions } from "./client";
 export { validatePipeline } from "./validate";
 export type { ValidationIssue, ValidationResult } from "./validate";
+export { expectGraph, livePipeline, snapshotRun, watch } from "./testing";
+export { GraphExpectation } from "./testing";

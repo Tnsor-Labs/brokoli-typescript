@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/checkout@v4
+        with:
+          repository: Tnsor-Labs/brokoli-sdk
+          ref: 5468b6c1bca12efda4c885bc030da5eed4d23635 # v0.8.0
+          path: brokoli-sdk
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run check:schema
+      - run: bun test
+        env:
+          BROKOLI_PYTHON: python3
+          PYTHONPATH: ${{ github.workspace }}/brokoli-sdk
