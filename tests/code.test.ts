@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { Client, Pipeline, filterScript, functionSource, mapScript, sensorScript, sinkScript, sourceScript, taskScript, validateScript } from "../src";
 
-type ContractResult = { output: unknown; emitted: unknown[]; emitColumns?: string[] };
+type ContractResult = { output: unknown; emitted: unknown[]; emitColumns?: string[]; sleeps: number[] };
 
 async function execute(script: string, rows: Record<string, unknown>[]): Promise<ContractResult> {
   const emitted: unknown[] = [];
+  const sleeps: number[] = [];
   let emitColumns: string[] | undefined;
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as FunctionConstructor;
   const run = new AsyncFunction(
-    "rows", "columns", "config", "params", "emit", "begin_emit", "rowsStream", "console",
+    "rows", "columns", "config", "params", "emit", "begin_emit", "rowsStream", "console", "sleep",
     `let output_data; ${script}\nreturn output_data;`,
   );
   const output = await run(
@@ -20,8 +21,12 @@ async function execute(script: string, rows: Record<string, unknown>[]): Promise
     (columns?: string[]) => { emitColumns = columns; },
     async function* () { for (const row of rows) yield row; },
     { log() {}, error() {} },
+    // Fake host bridge for the wrapper's `sleep(ms)` (contract.mjs): a
+    // Promise<void> that resolves after `ms`, recorded rather than
+    // actually awaited real-time so the sensor poll-loop test stays fast.
+    (ms: number) => { sleeps.push(ms); return Promise.resolve(); },
   );
-  return { output, emitted, emitColumns };
+  return { output, emitted, emitColumns, sleeps };
 }
 
 describe("TypeScript code-node authoring", () => {
@@ -50,6 +55,24 @@ describe("TypeScript code-node authoring", () => {
     expect(warned.output).toEqual({ columns: ["id"], rows: [{ id: 1 }] });
     const sensed = await execute(sensorScript(() => true, 1), []);
     expect(sensed.output).toEqual({ columns: [], rows: [] });
+    expect(sensed.sleeps).toEqual([]); // succeeds on the first poll: never sleeps
+  });
+
+  test("sensor polls with sleep(ms), not Atomics.wait, until the predicate succeeds", async () => {
+    // A predicate that fails twice then succeeds forces the while-loop
+    // body to actually run, exercising the branch the merged PR's own
+    // test left uncovered (its `() => true` predicate always succeeded
+    // on the first poll). Self-contained per the v1 closure rule: the
+    // counter lives on the named function expression itself, not in an
+    // outer closure `functionSource` would reject at deploy time anyway.
+    function pollSensor() {
+      pollSensor.calls = (pollSensor.calls || 0) + 1;
+      return pollSensor.calls >= 3;
+    }
+    pollSensor.calls = 0;
+    const sensed = await execute(sensorScript(pollSensor, 5), []);
+    expect(sensed.output).toEqual({ columns: [], rows: [] });
+    expect(sensed.sleeps).toEqual([5000, 5000]); // pollInterval seconds -> ms, once per failed poll
   });
 
   test("accepts arrow and function-expression sources", () => {

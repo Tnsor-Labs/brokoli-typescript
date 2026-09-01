@@ -37,8 +37,9 @@ Python decorator-equivalent surface as ordinary higher-order methods.
 `filter` and `map` generate against `rowsStream()` plus
 `begin_emit()`/`emit()` so they do not materialize the input. Raw code
 strings may use the wrapper names `rows`, `rowsStream`, `columns`,
-`config`, `params`, `emit`, `begin_emit`, and `output_data`; the names
-remain snake_case because they are a cross-language protocol contract.
+`config`, `params`, `emit`, `begin_emit`, `sleep`, and `output_data`; the
+names remain snake_case because they are a cross-language protocol
+contract.
 
 TypeScript and streaming code nodes fail closed when a server omits
 `supported_execution_features`; such a server cannot prove support for
@@ -50,11 +51,11 @@ behind the core runtime. Wrapper contract v1 is also matched exactly;
 compatible-version ranges can replace that conservative check when a v2
 contract exists.
 
-The v1 `sensor` generator currently sleeps with `Atomics.wait`, which
-requires `Atomics` and `SharedArrayBuffer` in the VM context. Core's JS
-wrapper ADR must either guarantee those globals or provide a fixed
-`sleep(ms)` namespace function, and the real-wrapper contract suite must
-cover the chosen behavior before B1 is release-complete.
+The `sensor` generator sleeps with `sleep(ms)`, the host-implemented
+namespace function ADR-030 settled on (`sleep` resolves after `ms`,
+clamped to >= 0; the Go-side exec timeout still governs). `Atomics` and
+`SharedArrayBuffer` are explicitly not part of the wrapper contract and
+are not exposed to user scripts.
 
 Branching routes explicitly — `gate.when(target)` marks the condition
 edge, then chain from the target:
