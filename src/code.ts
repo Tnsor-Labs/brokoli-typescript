@@ -85,7 +85,7 @@ export function sensorScript(fn: SensorFunction, pollInterval: number): string {
   return [
     `const __brokoli_sensor = (${functionSource(fn)});`,
     "while (!(await __brokoli_sensor())) {",
-    `  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${Math.max(1, pollInterval) * 1000});`,
+    `  await sleep(${Math.max(1, pollInterval) * 1000});`,
     "}",
     "output_data = { columns, rows };",
   ].join("\n");
