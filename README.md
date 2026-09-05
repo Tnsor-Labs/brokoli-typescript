@@ -68,6 +68,49 @@ shaped.then(pipeline.sinkFile("Load", undefined, { path: "out.csv" }));
 gate.otherwise(pipeline.notify("Nothing", undefined, { notifyType: "webhook", webhookUrl }));
 ```
 
+### Authoring sugar (ADR-034)
+
+`pipe()` builds a strictly linear pipeline as one expression, threading
+each step's return value into the next — for the common case where a
+pipeline genuinely is one chain. It expands to ordinary builder calls
+before compilation, so emitted IR is byte-identical to the equivalent
+hand-written `.then()` chain:
+
+```ts
+import { pipe } from "brokoli";
+
+const pipeline = pipe(
+  "Quarterly Revenue", { pipelineId: "qrv-1" },
+  (p) => p.sourceDb("Load Orders", { connId: "warehouse", query: "SELECT ..." }),
+  (p, orders) => p.task("Revenue Score", orders, (rows) => ({ columns: [], rows: [] })),
+  (p, scored) => p.sinkDb("Save", scored, { connId: "warehouse", table: "fact_revenue" }),
+);
+```
+
+Non-linear shapes (branch, union, fan-out) need more than one upstream
+ref per step and don't fit `pipe`'s signature by construction — use the
+`Pipeline` builder directly for those.
+
+`task(fn)` and `map(fn)` derive the node's display name from the
+function's own declared name (`normalizeOrders` -> `"Normalize Orders"`,
+matching the Python SDK's `func.__name__.replace("_", " ").title()`).
+Only function declarations and named function expressions qualify — an
+arrow function or a minified build still needs the explicit `name`
+argument, which is otherwise unaffected:
+
+```ts
+function normalizeOrders(rows: Row[]) { /* ... */ }
+pipeline.task(normalizeOrders, raw); // node name: "Normalize Orders"
+```
+
+`num`/`str`/`bool`/`maybe` are small `Number`/`String`/`Boolean`
+coercions for **authoring-time** TypeScript only — never inside a
+`task`/`map`/`filter`/`sink`/`source`/`validate`/`sensor` body. Those
+bodies are serialized with no access to outer scope (v1: self-contained
+functions only), so calling `str(...)` from inside one ships a dangling
+reference the worker cannot resolve. Inside a task body, keep using
+`Number(...)`/`String(...)` directly.
+
 ## Operating
 
 ```ts
@@ -95,6 +138,8 @@ without opening it.
 | Module | Contents |
 | --- | --- |
 | `src/pipeline.ts` | `Pipeline`, node factories, typed refs, branching |
+| `src/pipe.ts` | `pipe()` — linear-DAG authoring sugar (ADR-034) |
+| `src/cast.ts` | `num`/`str`/`bool`/`maybe` — authoring-time scalar coercions (ADR-034) |
 | `src/ir.ts` | IR types, normalization, canonical rendering, digests, diffs |
 | `src/client.ts` | `Client`, `Run`, deploy/run/backfill/retry, capability preflight |
 | `src/resources.ts` | `Secret`/`Variable`/`Param`/`EnvVar`/`Connection` interpolation refs |

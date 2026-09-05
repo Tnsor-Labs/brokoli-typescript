@@ -42,6 +42,29 @@ function cleanName(name: string): string {
   return kept || "node";
 }
 
+/** Derive a display name from a function's own declared name, mirroring
+ * the Python SDK's `func.__name__.replace("_", " ").title()` for the
+ * fn.name-only overloads of task()/map() (ADR-034 item 4). Only function
+ * declarations and named function expressions qualify: fn.name is
+ * unreliable for arrow functions and is destroyed by bundler
+ * minification either way, so anything else must still pass an explicit
+ * name — this never guesses. */
+function deriveNodeName(fn: Function): string {
+  const source = Function.prototype.toString.call(fn).trim();
+  if (!/^(?:async\s+)?function\b/.test(source) || !fn.name) {
+    throw new PipelineError(
+      "task(fn)/map(fn) can only derive a name from a function declaration or named function expression; " +
+        "pass an explicit name for arrow functions, anonymous functions, or minified builds.",
+    );
+  }
+  const words = fn.name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[\s_]+/)
+    .filter(Boolean);
+  return words.map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+}
+
 // Mirrors the Python SDK's _generate_pipeline_id: lowercase, spaces to
 // hyphens, strip everything outside [a-z0-9-], collapse hyphen runs,
 // trim leading/trailing hyphens.
@@ -78,6 +101,9 @@ function buildConfig(entries: Record<string, unknown>): Config {
   }
   return config;
 }
+
+export type TaskOptions = { retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; nodeKey?: string };
+export type MapOptions = { columns?: string[]; nodeKey?: string };
 
 export class NodeRef {
   constructor(
@@ -471,7 +497,29 @@ export class Pipeline {
 
   /** Serialize a self-contained function for the TypeScript code-node
    * runtime. Closure/import packaging is intentionally not supported in v1. */
-  task(name: string, input: NodeRef | undefined, fn: TaskFunction, options: { retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; nodeKey?: string } = {}): DatasetRef {
+  task(fn: TaskFunction, input?: NodeRef, options?: TaskOptions): DatasetRef;
+  task(name: string, input: NodeRef | undefined, fn: TaskFunction, options?: TaskOptions): DatasetRef;
+  task(
+    nameOrFn: string | TaskFunction,
+    inputOrFn?: NodeRef | TaskFunction,
+    fnOrOptions?: TaskFunction | TaskOptions,
+    maybeOptions: TaskOptions = {},
+  ): DatasetRef {
+    let name: string;
+    let input: NodeRef | undefined;
+    let fn: TaskFunction;
+    let options: TaskOptions;
+    if (typeof nameOrFn === "function") {
+      fn = nameOrFn;
+      input = inputOrFn as NodeRef | undefined;
+      options = (fnOrOptions as TaskOptions) ?? {};
+      name = deriveNodeName(fn);
+    } else {
+      name = nameOrFn;
+      input = inputOrFn as NodeRef | undefined;
+      fn = fnOrOptions as TaskFunction;
+      options = maybeOptions;
+    }
     return this.register("code", name, buildConfig({
       language: "typescript",
       script: taskScript(fn),
@@ -502,7 +550,29 @@ export class Pipeline {
     return this.register("code", name, { language: "typescript", script: filterScript(fn) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
-  map(name: string, input: NodeRef | undefined, fn: RowMapper, options: { columns?: string[]; nodeKey?: string } = {}): DatasetRef {
+  map(fn: RowMapper, input?: NodeRef, options?: MapOptions): DatasetRef;
+  map(name: string, input: NodeRef | undefined, fn: RowMapper, options?: MapOptions): DatasetRef;
+  map(
+    nameOrFn: string | RowMapper,
+    inputOrFn?: NodeRef | RowMapper,
+    fnOrOptions?: RowMapper | MapOptions,
+    maybeOptions: MapOptions = {},
+  ): DatasetRef {
+    let name: string;
+    let input: NodeRef | undefined;
+    let fn: RowMapper;
+    let options: MapOptions;
+    if (typeof nameOrFn === "function") {
+      fn = nameOrFn;
+      input = inputOrFn as NodeRef | undefined;
+      options = (fnOrOptions as MapOptions) ?? {};
+      name = deriveNodeName(fn);
+    } else {
+      name = nameOrFn;
+      input = inputOrFn as NodeRef | undefined;
+      fn = fnOrOptions as RowMapper;
+      options = maybeOptions;
+    }
     return this.register("code", name, { language: "typescript", script: mapScript(fn, options.columns) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
