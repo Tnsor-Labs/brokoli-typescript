@@ -39,21 +39,95 @@ export function functionSource(fn: Function): string {
   return source;
 }
 
-export function taskScript(fn: TaskFunction): string {
-  return `output_data = await (${functionSource(fn)})(rows);`;
+export type Helpers = Record<string, unknown>;
+
+/** Fixed wrapper namespace names (ADR-030) a helper must never shadow —
+ * these are not lexical scope, so a colliding const would silently break
+ * the generated script's own contract rather than merely shadow a local. */
+const RESERVED_WRAPPER_NAMES = new Set([
+  "rows",
+  "rowsStream",
+  "columns",
+  "config",
+  "params",
+  "emit",
+  "begin_emit",
+  "sleep",
+  "output_data",
+]);
+
+function serializeHelperValue(name: string, value: unknown): string {
+  if (typeof value === "function") {
+    return `const ${name} = (${functionSource(value)});`;
+  }
+  let literal: string | undefined;
+  try {
+    literal = JSON.stringify(value);
+  } catch {
+    literal = undefined;
+  }
+  if (literal === undefined) {
+    throw new PipelineError(
+      `helpers.${name} is neither a function nor JSON-serializable (got ${typeof value}); ` +
+        "only functions and JSON-safe constants can be captured as helpers",
+    );
+  }
+  return `const ${name} = ${literal};`;
 }
 
-export function sourceScript(fn: SourceFunction): string {
-  return `output_data = await (${functionSource(fn)})();`;
+/**
+ * Serialize a `helpers` map (ADR-034 item 3) into a preamble of `const`
+ * declarations, so a task/map/filter/... body can reference module-level
+ * helpers and constants without inlining them by hand. Rewriting happens
+ * here, at authoring time — the worker still receives one opaque script,
+ * so emitted IR is unaffected by this feature existing.
+ *
+ * Scope, stated plainly: this catches the checkable failure modes (an
+ * invalid identifier, a name colliding with the fixed wrapper namespace,
+ * a helper that is neither a function nor JSON-serializable, a function
+ * `functionSource()` already rejects as non-self-contained). It does
+ * **not** attempt general free-variable/closure analysis — detecting
+ * that a helper function itself closes over some other module-scope
+ * variable not present in this same `helpers` map needs real AST
+ * inspection, which JavaScript's "no bytecode inspection" (the same
+ * limitation the base v1 contract already has for an ordinary task
+ * body) does not give us. That case still surfaces, just remotely, as a
+ * `ReferenceError` inside the worker rather than a local `PipelineError`.
+ */
+export function helpersPreamble(helpers?: Helpers): string {
+  if (!helpers) return "";
+  const names = Object.keys(helpers);
+  if (names.length === 0) return "";
+  const lines: string[] = [];
+  for (const name of names) {
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) {
+      throw new PipelineError(`helpers key ${JSON.stringify(name)} is not a valid identifier`);
+    }
+    if (RESERVED_WRAPPER_NAMES.has(name)) {
+      throw new PipelineError(
+        `helpers.${name} collides with the fixed wrapper namespace name "${name}"; rename the helper`,
+      );
+    }
+    lines.push(serializeHelperValue(name, helpers[name]));
+  }
+  return `${lines.join("\n")}\n`;
 }
 
-export function sinkScript(fn: SinkFunction): string {
-  return `await (${functionSource(fn)})(rows);\noutput_data = { columns, rows };`;
+export function taskScript(fn: TaskFunction, helpers?: Helpers): string {
+  return `${helpersPreamble(helpers)}output_data = await (${functionSource(fn)})(rows);`;
 }
 
-export function filterScript(fn: RowPredicate): string {
+export function sourceScript(fn: SourceFunction, helpers?: Helpers): string {
+  return `${helpersPreamble(helpers)}output_data = await (${functionSource(fn)})();`;
+}
+
+export function sinkScript(fn: SinkFunction, helpers?: Helpers): string {
+  return `${helpersPreamble(helpers)}await (${functionSource(fn)})(rows);\noutput_data = { columns, rows };`;
+}
+
+export function filterScript(fn: RowPredicate, helpers?: Helpers): string {
   return [
-    `const __brokoli_filter = (${functionSource(fn)});`,
+    `${helpersPreamble(helpers)}const __brokoli_filter = (${functionSource(fn)});`,
     "begin_emit(columns);",
     "for await (const row of rowsStream()) {",
     "  if (await __brokoli_filter(row)) emit(row);",
@@ -61,17 +135,17 @@ export function filterScript(fn: RowPredicate): string {
   ].join("\n");
 }
 
-export function mapScript(fn: RowMapper, outputColumns?: string[]): string {
+export function mapScript(fn: RowMapper, outputColumns?: string[], helpers?: Helpers): string {
   return [
-    `const __brokoli_map = (${functionSource(fn)});`,
+    `${helpersPreamble(helpers)}const __brokoli_map = (${functionSource(fn)});`,
     outputColumns ? `begin_emit(${JSON.stringify(outputColumns)});` : "begin_emit();",
     "for await (const row of rowsStream()) emit(await __brokoli_map(row));",
   ].join("\n");
 }
 
-export function validateScript(fn: ValidateFunction, onFailure: "block" | "warn"): string {
+export function validateScript(fn: ValidateFunction, onFailure: "block" | "warn", helpers?: Helpers): string {
   return [
-    `const __brokoli_validation = await (${functionSource(fn)})(rows);`,
+    `${helpersPreamble(helpers)}const __brokoli_validation = await (${functionSource(fn)})(rows);`,
     "const [__brokoli_passed, __brokoli_message] = Array.isArray(__brokoli_validation)",
     "  ? __brokoli_validation : [Boolean(__brokoli_validation), \"\"];",
     onFailure === "block"
@@ -81,9 +155,9 @@ export function validateScript(fn: ValidateFunction, onFailure: "block" | "warn"
   ].join("\n");
 }
 
-export function sensorScript(fn: SensorFunction, pollInterval: number): string {
+export function sensorScript(fn: SensorFunction, pollInterval: number, helpers?: Helpers): string {
   return [
-    `const __brokoli_sensor = (${functionSource(fn)});`,
+    `${helpersPreamble(helpers)}const __brokoli_sensor = (${functionSource(fn)});`,
     "while (!(await __brokoli_sensor())) {",
     `  await sleep(${Math.max(1, pollInterval) * 1000});`,
     "}",

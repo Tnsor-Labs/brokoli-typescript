@@ -7,6 +7,7 @@
 import { PipelineError } from "./errors";
 import {
   filterScript,
+  helpersPreamble,
   mapScript,
   sensorScript,
   sinkScript,
@@ -15,6 +16,7 @@ import {
   validateScript,
 } from "./code";
 import type {
+  Helpers,
   RowMapper,
   RowPredicate,
   SensorFunction,
@@ -102,8 +104,8 @@ function buildConfig(entries: Record<string, unknown>): Config {
   return config;
 }
 
-export type TaskOptions = { retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; nodeKey?: string };
-export type MapOptions = { columns?: string[]; nodeKey?: string };
+export type TaskOptions = { retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; nodeKey?: string; helpers?: Helpers };
+export type MapOptions = { columns?: string[]; nodeKey?: string; helpers?: Helpers };
 
 export class NodeRef {
   constructor(
@@ -481,10 +483,10 @@ export class Pipeline {
     }), [], { nodeKey: options.nodeKey });
   }
 
-  code(name: string, input?: NodeRef, options: { language?: "python" | "typescript"; script?: string; pythonPath?: string; nodePath?: string; retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; nodeKey?: string } = {}): NodeRef {
+  code(name: string, input?: NodeRef, options: { language?: "python" | "typescript"; script?: string; helpers?: Helpers; pythonPath?: string; nodePath?: string; retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; nodeKey?: string } = {}): NodeRef {
     return this.register("code", name, buildConfig({
       language: options.language || "python",
-      script: options.script || "",
+      script: `${helpersPreamble(options.helpers)}${options.script || ""}`,
       python_path: options.pythonPath,
       node_path: options.nodePath,
       max_retries: options.retries,
@@ -522,7 +524,7 @@ export class Pipeline {
     }
     return this.register("code", name, buildConfig({
       language: "typescript",
-      script: taskScript(fn),
+      script: taskScript(fn, options.helpers),
       max_retries: options.retries,
       retry_backoff: options.retries === undefined ? undefined : options.retryBackoff || "exponential",
       timeout: options.timeout,
@@ -531,23 +533,23 @@ export class Pipeline {
     }), input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
-  source(name: string, fn: SourceFunction, options: { retries?: number; timeout?: number; nodeKey?: string } = {}): DatasetRef {
-    return this.register("code", name, buildConfig({ language: "typescript", script: sourceScript(fn), max_retries: options.retries, timeout: options.timeout }), [], {
+  source(name: string, fn: SourceFunction, options: { retries?: number; timeout?: number; nodeKey?: string; helpers?: Helpers } = {}): DatasetRef {
+    return this.register("code", name, buildConfig({ language: "typescript", script: sourceScript(fn, options.helpers), max_retries: options.retries, timeout: options.timeout }), [], {
       nodeKey: options.nodeKey,
       kind: "dataset",
       capabilities: ["source", "dataset-output"],
     });
   }
 
-  sink(name: string, input: NodeRef | undefined, fn: SinkFunction, options: { retries?: number; timeout?: number; nodeKey?: string } = {}): NodeRef {
-    return this.register("code", name, buildConfig({ language: "typescript", script: sinkScript(fn), max_retries: options.retries, timeout: options.timeout }), input ? [input] : [], {
+  sink(name: string, input: NodeRef | undefined, fn: SinkFunction, options: { retries?: number; timeout?: number; nodeKey?: string; helpers?: Helpers } = {}): NodeRef {
+    return this.register("code", name, buildConfig({ language: "typescript", script: sinkScript(fn, options.helpers), max_retries: options.retries, timeout: options.timeout }), input ? [input] : [], {
       nodeKey: options.nodeKey,
       capabilities: ["sink"],
     });
   }
 
-  filter(name: string, input: NodeRef | undefined, fn: RowPredicate, options: { nodeKey?: string } = {}): DatasetRef {
-    return this.register("code", name, { language: "typescript", script: filterScript(fn) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
+  filter(name: string, input: NodeRef | undefined, fn: RowPredicate, options: { nodeKey?: string; helpers?: Helpers } = {}): DatasetRef {
+    return this.register("code", name, { language: "typescript", script: filterScript(fn, options.helpers) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
   map(fn: RowMapper, input?: NodeRef, options?: MapOptions): DatasetRef;
@@ -573,15 +575,15 @@ export class Pipeline {
       fn = fnOrOptions as RowMapper;
       options = maybeOptions;
     }
-    return this.register("code", name, { language: "typescript", script: mapScript(fn, options.columns) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
+    return this.register("code", name, { language: "typescript", script: mapScript(fn, options.columns, options.helpers) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
-  validate(name: string, input: NodeRef | undefined, fn: ValidateFunction, options: { onFailure?: "block" | "warn"; nodeKey?: string } = {}): NodeRef {
-    return this.register("code", name, { language: "typescript", script: validateScript(fn, options.onFailure || "block") }, input ? [input] : [], { nodeKey: options.nodeKey });
+  validate(name: string, input: NodeRef | undefined, fn: ValidateFunction, options: { onFailure?: "block" | "warn"; nodeKey?: string; helpers?: Helpers } = {}): NodeRef {
+    return this.register("code", name, { language: "typescript", script: validateScript(fn, options.onFailure || "block", options.helpers) }, input ? [input] : [], { nodeKey: options.nodeKey });
   }
 
-  sensor(name: string, fn: SensorFunction, options: { pollInterval?: number; timeout?: number; nodeKey?: string } = {}): NodeRef {
-    return this.register("code", name, buildConfig({ language: "typescript", script: sensorScript(fn, options.pollInterval ?? 60), timeout: options.timeout ?? 3600 }), [], { nodeKey: options.nodeKey });
+  sensor(name: string, fn: SensorFunction, options: { pollInterval?: number; timeout?: number; nodeKey?: string; helpers?: Helpers } = {}): NodeRef {
+    return this.register("code", name, buildConfig({ language: "typescript", script: sensorScript(fn, options.pollInterval ?? 60, options.helpers), timeout: options.timeout ?? 3600 }), [], { nodeKey: options.nodeKey });
   }
 
   union(name: string, ...refs: NodeRef[]): DatasetRef {

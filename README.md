@@ -111,6 +111,34 @@ functions only), so calling `str(...)` from inside one ships a dangling
 reference the worker cannot resolve. Inside a task body, keep using
 `Number(...)`/`String(...)` directly.
 
+A `helpers` option on `task`/`source`/`sink`/`filter`/`map`/`validate`/
+`sensor`/`code` solves the same problem `num`/`str`/`bool` cannot: it
+captures module-level functions and constants a task body actually
+calls, by serializing each one once into a `const` preamble ahead of
+the body — rewriting happens here, at authoring time, so the worker
+still receives one opaque script and emitted IR is unaffected:
+
+```ts
+const TAX_RATE = 0.21;
+function grossMargin(revenue: number, cost: number) {
+  return (revenue - cost) * (1 - TAX_RATE);
+}
+
+pipeline.task("Revenue Score", raw, (rows) => ({
+  columns: ["id", "margin"],
+  rows: rows.map((row) => ({ id: row.id, margin: grossMargin(row.revenue, row.cost) })),
+}), { helpers: { grossMargin, TAX_RATE } });
+```
+
+A helper name colliding with the fixed wrapper namespace, an invalid
+identifier, or a value that is neither a function nor JSON-serializable
+is a `PipelineError` at authoring time. What this does **not** catch: a
+helper function that itself closes over some other module-scope
+variable not present in the same `helpers` map — detecting that needs
+real AST inspection, which this SDK's "no bytecode inspection" v1
+contract does not have, so it still surfaces as a remote
+`ReferenceError` inside the worker rather than a local error.
+
 ## Operating
 
 ```ts

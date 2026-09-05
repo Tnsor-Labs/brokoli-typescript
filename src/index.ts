@@ -7,6 +7,7 @@ export {
   JS_WRAPPER_VERSION,
   filterScript,
   functionSource,
+  helpersPreamble,
   mapScript,
   sensorScript,
   sinkScript,
@@ -15,6 +16,7 @@ export {
   validateScript,
 } from "./code";
 export type {
+  Helpers,
   OutputRows,
   Row,
   RowMapper,
