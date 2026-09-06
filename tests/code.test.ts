@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Client, Pipeline, filterScript, functionSource, mapScript, sensorScript, sinkScript, sourceScript, taskScript, validateScript } from "../src";
+import { schema } from "../src/schema";
 
 type ContractResult = { output: unknown; emitted: unknown[]; emitColumns?: string[]; sleeps: number[] };
 
@@ -127,5 +128,20 @@ describe("TypeScript code-node authoring", () => {
       code_js_wrapper_version: 2,
     }))) as unknown as typeof fetch;
     await expect(new Client("http://server", { fetch: fetcher }).preflight(p)).rejects.toThrow(/require JS wrapper version 1/);
+  });
+
+  test("gates a task interface on task-interface-v1 via the ir_version check", async () => {
+    // ADR-032 rollout step 3: a typed task bumps ir_version to 2.2, which
+    // the earlier supportedIrVersions check already refuses on any server
+    // that doesn't list "2.2" -- a server new enough to accept 2.2 cannot
+    // coherently be missing task-interface-v1, so client.ts adds no
+    // separate runtime-existence gate for it (see requiredExecutionFeatures
+    // in src/ir.ts).
+    const p = new Pipeline("Typed gate");
+    p.task("Task", undefined, (rows) => ({ columns: [], rows }), {
+      input: schema.record({ id: schema.int64() }),
+    });
+    const fetcher = (async () => new Response(JSON.stringify({ supported_ir_versions: ["2.0", "2.1"] }))) as unknown as typeof fetch;
+    await expect(new Client("http://legacy", { fetch: fetcher }).preflight(p)).rejects.toThrow(/requires IR 2\.2/);
   });
 });
