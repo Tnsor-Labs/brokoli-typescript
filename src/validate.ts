@@ -1,10 +1,29 @@
 /** Local structural validation — the checks that need no server. */
 
 import Ajv2020 from "ajv/dist/2020";
-import schema from "../schema/pipeline-ir-2.1.json";
+import pipelineSchema from "../schema/pipeline-ir-2.2.json";
+import taskInterfaceSchema from "../schema/task-interface-v1.json";
 import type { Pipeline } from "./pipeline";
 
-const validateSchema = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+// pipeline-ir-2.2.json's "interface"/"parameters" fields $ref into
+// task-interface-v1.json by its own declared absolute $id -- register
+// it first so Ajv can resolve that relative "task-interface-v1.json#/..."
+// ref into the same https:// URL-space both schemas' $id declare (the
+// same cross-file resolution the core Go test suite needs; see
+// models/ir_schema_contract_test.go there). 2.2 is a strict superset of
+// 2.0/2.1 (a document using neither field is a valid 2.2 document), so
+// this is the one schema every pipeline validates against regardless of
+// which ir_version it actually compiles to.
+// strictRequired: false -- task-interface-v1.json's parameter_declaration
+// enforces "required:true and default are mutually exclusive" with a
+// `not: { required: [...] }` clause naming a property outside that
+// sub-schema's own `properties` block (a deliberate, well-formed
+// construct also used by the core repo's Go validator and the Python
+// SDK's own schema tests); Ajv's strict mode alone flags this pattern
+// as suspicious even though it isn't.
+const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+ajv.addSchema(taskInterfaceSchema);
+const validateSchema = ajv.compile(pipelineSchema);
 
 export type ValidationIssue = {
   nodeName: string;

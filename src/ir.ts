@@ -8,6 +8,8 @@
  * Change nothing here without reading that spec first.
  */
 
+import type { ParameterDeclaration, TaskInterface } from "./schema";
+
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Config = Record<string, unknown>;
 
@@ -28,6 +30,11 @@ export type IRNode = {
   config: Config;
   capabilities: Capability[];
   position?: { x: number; y: number };
+  /** ADR-032 rollout step 3: this node's portable task interface, built
+   * by schema.ts's buildTaskInterface() from task()'s explicit
+   * input/output schemas. Absent unless declared -- an untyped task
+   * carries no interface key at all, matching the Python SDK. */
+  interface?: TaskInterface;
 };
 
 export type PipelineIR = {
@@ -36,7 +43,7 @@ export type PipelineIR = {
   description: string;
   schedule: string;
   enabled: boolean;
-  ir_version: "2.0" | "2.1";
+  ir_version: "2.0" | "2.1" | "2.2";
   nodes: IRNode[];
   edges: Edge[];
   tags: string[];
@@ -47,6 +54,9 @@ export type PipelineIR = {
   sla_timezone?: string;
   hooks?: Record<string, unknown>;
   params?: Record<string, unknown>;
+  /** ADR-032 rollout step 3: pipeline-level typed parameter
+   * declarations, keyed by name -- from task()'s `parameters` option. */
+  parameters?: Record<string, ParameterDeclaration>;
   dependency_rules?: unknown[];
   webhook_url?: string;
   webhook_token?: string;
@@ -176,6 +186,11 @@ export function requiredExecutionFeatures(ir: PipelineIR): string[] {
   const features = new Set<string>();
   if (ir.edges.some((edge) => edge.condition !== undefined)) features.add("conditional-routing");
   for (const node of ir.nodes) {
+    // ADR-032 rollout step 3: a node's "interface" field is additive IR,
+    // but a server that doesn't advertise task-interface-v1 may not
+    // even accept IR 2.2 -- refuse at deploy preflight rather than let
+    // a strict decoder 400 it.
+    if (node.interface !== undefined) features.add("task-interface-v1");
     if (node.config.expansion) features.add("dynamic-expansion");
     if (node.type === "union") features.add("union");
     if (node.type === "dataset_map") features.add("dataset-map");
@@ -187,5 +202,8 @@ export function requiredExecutionFeatures(ir: PipelineIR): string[] {
     }
   }
   if (ir.catchup) features.add("data_intervals");
+  // ADR-032 rollout step 3: a pipeline-level "parameters" declaration
+  // needs the same gate as a node's own "interface" field above.
+  if (ir.parameters && Object.keys(ir.parameters).length) features.add("task-interface-v1");
   return [...features].sort(codePointCompare);
 }

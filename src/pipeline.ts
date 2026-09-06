@@ -29,6 +29,8 @@ import type { Capability, Config, Edge, IRNode, PipelineIR } from "./ir";
 import { NODE_TYPE_CAPABILITIES, irDigest, renderIR } from "./ir";
 import { PaginationStrategy } from "./pagination";
 import type { Connection } from "./resources";
+import type { BptdType, ParameterDeclaration, TaskInterface } from "./schema";
+import { buildTaskInterface } from "./schema";
 
 /** Node id base: lowercase, [a-z0-9_] only, max 20 chars, "node" fallback
  * — must match the Python SDK's allocator for cross-SDK id parity. */
@@ -104,7 +106,27 @@ function buildConfig(entries: Record<string, unknown>): Config {
   return config;
 }
 
-export type TaskOptions = { retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; nodeKey?: string; helpers?: Helpers };
+export type TaskOptions = {
+  retries?: number;
+  retryBackoff?: string;
+  timeout?: number;
+  maxMemoryMb?: number;
+  maxCpuSeconds?: number;
+  nodeKey?: string;
+  helpers?: Helpers;
+  /** ADR-032 rollout step 3: this task's input/output row schema,
+   * built with `schema.record(...)` -- explicit, since TypeScript
+   * cannot recover erased generic types at runtime. Omit either side
+   * to leave it unknown; omit both for no interface at all. */
+  input?: BptdType;
+  output?: BptdType;
+  /** ADR-032 rollout step 3: typed pipeline parameters this task reads,
+   * built with `parameter.number(...)`/`parameter.string(...)`/etc.
+   * Merged onto the owning Pipeline -- two task() calls sharing a name
+   * must declare it identically, or Pipeline throws naming the
+   * conflict. */
+  parameters?: Record<string, ParameterDeclaration>;
+};
 export type MapOptions = { columns?: string[]; nodeKey?: string; helpers?: Helpers };
 
 export class NodeRef {
@@ -214,6 +236,11 @@ export class Pipeline {
   readonly hooks?: Record<string, Hook>;
   readonly nodes: IRNode[] = [];
   readonly edges: Edge[] = [];
+  /** ADR-032 rollout step 3: pipeline-level parameter declarations from
+   * task()'s `parameters` option, keyed by name. Distinct from any
+   * node's own interface -- this is what toJSON() serializes as the
+   * pipeline's top-level `parameters`. */
+  readonly parameters: Record<string, ParameterDeclaration> = {};
   private counters = new Map<string, number>();
 
   constructor(
@@ -270,13 +297,30 @@ export class Pipeline {
     }
   }
 
+  /** Register a pipeline-level parameter (ADR-032 rollout step 3), or
+   * confirm an identical re-declaration from a second task() reusing the
+   * same name. A same-name/different-declaration collision across two
+   * tasks is almost certainly two unrelated concepts sharing a name by
+   * accident -- raise rather than silently keep whichever came first. */
+  private mergeParameter(name: string, declaration: ParameterDeclaration): void {
+    const existing = this.parameters[name];
+    if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(declaration)) {
+      throw new PipelineError(
+        `Parameter ${name} was declared with two different declarations ` +
+          `(${JSON.stringify(existing)} vs ${JSON.stringify(declaration)}) from different task() calls. ` +
+          "Give the parameters different names.",
+      );
+    }
+    this.parameters[name] = declaration;
+  }
+
   /** Low-level node registration; the factories below are the API. */
   register<T extends NodeRef = NodeRef>(
     type: string,
     name: string,
     config: Config,
     inputs: NodeRef[],
-    options: { nodeKey?: string; kind?: string; capabilities?: Capability[] } = {},
+    options: { nodeKey?: string; kind?: string; capabilities?: Capability[]; taskInterface?: TaskInterface } = {},
   ): T {
     for (const input of inputs) this.assertOwn(input);
     const id = this.allocateId(name, options.nodeKey);
@@ -286,6 +330,7 @@ export class Pipeline {
       name,
       config: structuredClone(config),
       capabilities: [...(options.capabilities || NODE_TYPE_CAPABILITIES[type] || (["compute"] as Capability[]))],
+      ...(options.taskInterface ? { interface: structuredClone(options.taskInterface) } : {}),
     });
     const Ref = REF_KINDS[options.kind || "node"] || NodeRef;
     const ref = new Ref(id, this, options.kind || "node") as T;
@@ -522,6 +567,11 @@ export class Pipeline {
       fn = fnOrOptions as TaskFunction;
       options = maybeOptions;
     }
+    if (options.parameters) {
+      for (const [paramName, declaration] of Object.entries(options.parameters)) {
+        this.mergeParameter(paramName, declaration);
+      }
+    }
     return this.register("code", name, buildConfig({
       language: "typescript",
       script: taskScript(fn, options.helpers),
@@ -530,7 +580,11 @@ export class Pipeline {
       timeout: options.timeout,
       max_memory_mb: options.maxMemoryMb,
       max_cpu_seconds: options.maxCpuSeconds,
-    }), input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
+    }), input ? [input] : [], {
+      nodeKey: options.nodeKey,
+      kind: "dataset",
+      taskInterface: buildTaskInterface(options.input, options.output),
+    });
   }
 
   source(name: string, fn: SourceFunction, options: { retries?: number; timeout?: number; nodeKey?: string; helpers?: Helpers } = {}): DatasetRef {
@@ -601,13 +655,14 @@ export class Pipeline {
    * canonicalization spec: optional top-level fields appear only when
    * set, and catchup only ever as `true`. */
   toJSON(): PipelineIR {
+    const usesTaskInterfaces = Object.keys(this.parameters).length > 0 || this.nodes.some((n) => n.interface !== undefined);
     const ir: PipelineIR = {
       pipeline_id: this.pipelineId,
       name: this.name,
       description: this.description,
       schedule: this.schedule,
       enabled: true,
-      ir_version: this.edges.some((e) => e.condition !== undefined) ? "2.1" : "2.0",
+      ir_version: usesTaskInterfaces ? "2.2" : this.edges.some((e) => e.condition !== undefined) ? "2.1" : "2.0",
       nodes: structuredClone(this.nodes),
       edges: structuredClone(this.edges),
       tags: [...this.tags],
@@ -621,6 +676,11 @@ export class Pipeline {
       ir.sla_timezone = separator < 0 ? "UTC" : this.sla.slice(separator + 1);
     }
     if (this.hooks && Object.keys(this.hooks).length) ir.hooks = structuredClone(this.hooks);
+    // ADR-032 rollout step 3: pipeline-level parameters from task()'s
+    // `parameters` option. Omitted unless non-empty, matching every
+    // other optional field here -- a pipeline that never used typed
+    // task parameters compiles identically to before.
+    if (Object.keys(this.parameters).length) ir.parameters = structuredClone(this.parameters);
     if (this.webhook) ir.webhook_token = "";
     return ir;
   }
