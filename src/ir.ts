@@ -199,6 +199,10 @@ export function diffIR(local: PipelineIR, remote?: PipelineIR): string {
 export const RUNTIME_EXISTENCE_FEATURES: readonly string[] = [
   "code-typescript",
   "code-streaming-emit",
+  // A server old enough to omit the feature list entirely cannot have
+  // the wait watcher, so absence means "unsupported" here rather than
+  // "predates the field".
+  "deferrable-waits",
   "task-runtime-v1",
   "task-bundle-v2",
   "task-ports-v1",
@@ -241,6 +245,13 @@ export function requiredExecutionFeatures(ir: PipelineIR): string[] {
     if (node.type === "dataset_map") features.add("dataset-map");
     if (node.type === "dataset_filter") features.add("dataset-filter");
     if (node.config.execution) features.add("pagination-checkpoints");
+    // A deferrable wait parks the run in the scheduler rather than
+    // occupying a worker. A server without the watcher has no handler
+    // for the node type at all -- it reaches `built-in node type "wait"
+    // has no runtime handler` mid-run, after a deploy that looked
+    // clean. wait() has always documented "server v0.10.79+"; this is
+    // what enforces it.
+    if (node.type === "wait") features.add("deferrable-waits");
     if (node.type === "code" && node.config.language === "typescript") features.add("code-typescript");
     if (node.type === "code" && typeof node.config.script === "string" && /\b(?:emit|begin_emit)\s*\(/.test(node.config.script)) {
       features.add("code-streaming-emit");
