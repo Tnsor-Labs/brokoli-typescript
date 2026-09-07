@@ -203,6 +203,7 @@ export const RUNTIME_EXISTENCE_FEATURES: readonly string[] = [
   // the wait watcher, so absence means "unsupported" here rather than
   // "predates the field".
   "deferrable-waits",
+  "task-parameters-v1",
   "task-runtime-v1",
   "task-bundle-v2",
   "task-ports-v1",
@@ -260,6 +261,15 @@ export function requiredExecutionFeatures(ir: PipelineIR): string[] {
   if (ir.catchup) features.add("data_intervals");
   // ADR-032 rollout step 3: a pipeline-level "parameters" declaration
   // needs the same gate as a node's own "interface" field above.
-  if (ir.parameters && Object.keys(ir.parameters).length) features.add("task-interface-v1");
+  if (ir.parameters && Object.keys(ir.parameters).length) {
+    features.add("task-interface-v1");
+    // ...and a second, stricter gate. task-interface-v1 only says the
+    // server understands the declaration; it does not say the server
+    // DELIVERS the resolved values to the task. Until brokoli#487 that
+    // was exactly the gap: a submitted parameter was validated, recorded
+    // on the run, and then ignored, so the task ran with its default and
+    // produced a green run with a wrong answer.
+    features.add("task-parameters-v1");
+  }
   return [...features].sort(codePointCompare);
 }

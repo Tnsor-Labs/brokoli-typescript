@@ -118,3 +118,33 @@ describe("deferrable-waits gate", () => {
     ).rejects.toThrow(/deferrable-waits/);
   });
 });
+
+describe("task-parameters-v1 gate", () => {
+  test("declared pipeline parameters require delivery, not just understanding", () => {
+    // brokoli#487: a server can accept the declaration (task-interface-v1)
+    // and still never deliver the resolved value to the task, running it
+    // with its default while the run row records what was submitted.
+    // Understanding and delivering are separate capabilities.
+    const features = requiredExecutionFeatures(
+      ir({ nodes: [codeNode], parameters: { threshold: { type: { kind: "float64" }, required: false } } }),
+    );
+    expect(features).toContain("task-interface-v1");
+    expect(features).toContain("task-parameters-v1");
+  });
+
+  test("a pipeline declaring no parameters requires neither", () => {
+    const features = requiredExecutionFeatures(ir({ nodes: [codeNode] }));
+    expect(features).not.toContain("task-parameters-v1");
+  });
+
+  test("it is a runtime-existence feature, so a legacy server is refused", async () => {
+    expect(RUNTIME_EXISTENCE_FEATURES).toContain("task-parameters-v1");
+    const fetcher = (async () =>
+      new Response(JSON.stringify({ supported_ir_versions: ["2.0", "2.1"] }))) as unknown as typeof fetch;
+    await expect(
+      new Client("http://legacy", { fetch: fetcher }).preflight({
+        toJSON: () => ir({ nodes: [codeNode], parameters: { t: { type: { kind: "float64" } } } }),
+      } as never),
+    ).rejects.toThrow(/task-parameters-v1/);
+  });
+});
