@@ -21,7 +21,18 @@ export type Capability =
   | "dynamic-expansion"
   | "collection-output";
 
-export type Edge = { from: string; to: string; condition?: boolean };
+// from_port/to_port name the specific ADR-032 output and input ports an
+// edge connects. Optional and additive: absent means the node's default
+// port, which is every edge this SDK builds today. They exist on the
+// type so a hand-assembled or round-tripped IR carrying them is gated by
+// requiredExecutionFeatures rather than silently stripped.
+export type Edge = {
+  from: string;
+  to: string;
+  condition?: boolean;
+  from_port?: string;
+  to_port?: string;
+};
 
 export type IRNode = {
   id: string;
@@ -179,13 +190,47 @@ export function diffIR(local: PipelineIR, remote?: PipelineIR): string {
   return `${lines.join("\n")}\n`;
 }
 
+/** Features naming a runtime that must actually EXIST on the server (a
+ * wrapper idiom, a worker language, a harness, a bundle resolver). For
+ * these, a capability response that simply omits the feature list must
+ * fail closed: absence cannot prove the runtime exists. Purely
+ * declarative features keep the legacy waiver. Mirrors the Python SDK's
+ * RUNTIME_EXISTENCE_FEATURES. */
+export const RUNTIME_EXISTENCE_FEATURES: readonly string[] = [
+  "code-typescript",
+  "code-streaming-emit",
+  "task-runtime-v1",
+  "task-bundle-v2",
+  "task-ports-v1",
+];
+
 /** The execution features a compiled pipeline depends on — must match
  * the Python SDK's required_execution_features so both refuse the same
  * servers for the same reasons. */
 export function requiredExecutionFeatures(ir: PipelineIR): string[] {
   const features = new Set<string>();
   if (ir.edges.some((edge) => edge.condition !== undefined)) features.add("conditional-routing");
+  // ADR-032 named ports. No released server advertises task-ports-v1
+  // yet, so this gate refuses every port-carrying deploy --
+  // deliberately. The alternative is worse: a server that doesn't
+  // understand from_port/to_port drops them and silently routes the edge
+  // as if it were unported, which is a wrong pipeline rather than a
+  // refused one.
+  if (ir.edges.some((edge) => edge.from_port || edge.to_port)) features.add("task-ports-v1");
   for (const node of ir.nodes) {
+    // ADR-033: a "task" node is a whole separate execution path
+    // (task-bundle/v2 payload dispatched over the
+    // brokoli.task-runtime/v1 protocol), not a variant of "code". A
+    // server that predates it doesn't merely lack a feature -- its
+    // validator hard-refuses any pipeline containing one, so without
+    // this gate the deploy fails server-side with a structural error
+    // that says nothing about which capability was missing. task_bundle
+    // is mandatory on a task node (optional on a code node), so both
+    // features always travel together.
+    if (node.type === "task") {
+      features.add("task-runtime-v1");
+      features.add("task-bundle-v2");
+    }
     // ADR-032 rollout step 3: a node's "interface" field is additive IR,
     // but a server that doesn't advertise task-interface-v1 may not
     // even accept IR 2.2 -- refuse at deploy preflight rather than let
