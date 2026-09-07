@@ -8,7 +8,7 @@
 import { APIError } from "./errors";
 import { JS_WRAPPER_VERSION } from "./code";
 import type { PipelineIR } from "./ir";
-import { requiredExecutionFeatures } from "./ir";
+import { requiredExecutionFeatures, RUNTIME_EXISTENCE_FEATURES } from "./ir";
 import { loadToken } from "./credentials";
 import type { Pipeline } from "./pipeline";
 
@@ -226,10 +226,10 @@ export class Client {
       // features retain the Python SDK's compatibility behavior. New code
       // runtime contracts are different: absence cannot prove that the
       // language/wrapper exists, and must fail closed.
-      const missing = required.filter((feature) => feature === "code-typescript" || feature === "code-streaming-emit");
+      const missing = required.filter((feature) => RUNTIME_EXISTENCE_FEATURES.includes(feature));
       if (missing.length) {
         throw new APIError(
-          `Server does not advertise execution feature(s): ${missing.join(", ")}. TypeScript code nodes require an explicit runtime capability; a legacy capability response cannot prove compatibility.`,
+          `Server does not advertise execution feature(s): ${missing.join(", ")}. These name a runtime that must exist on the server; a legacy capability response cannot prove compatibility.`,
           409,
           caps.raw,
         );
