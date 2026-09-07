@@ -94,3 +94,27 @@ describe("task-node and port feature gates", () => {
     ).rejects.toThrow(/task-bundle-v2, task-runtime-v1/);
   });
 });
+
+describe("deferrable-waits gate", () => {
+  const waitNode = { id: "w", type: "wait", name: "W", config: { until: "2026-01-01T00:00:00Z" } };
+
+  test("a wait node requires deferrable-waits", () => {
+    // Pipeline.wait() has always documented "server v0.10.79+" without
+    // enforcing it. A server without the watcher has no handler for the
+    // node type at all and fails mid-run, after a clean deploy.
+    expect(requiredExecutionFeatures(ir({ nodes: [waitNode] }))).toContain("deferrable-waits");
+  });
+
+  test("a pipeline without a wait node does not require it", () => {
+    expect(requiredExecutionFeatures(ir({ nodes: [codeNode] }))).not.toContain("deferrable-waits");
+  });
+
+  test("it is a runtime-existence feature, so a legacy server is refused", async () => {
+    expect(RUNTIME_EXISTENCE_FEATURES).toContain("deferrable-waits");
+    const fetcher = (async () =>
+      new Response(JSON.stringify({ supported_ir_versions: ["2.0", "2.1"] }))) as unknown as typeof fetch;
+    await expect(
+      new Client("http://legacy", { fetch: fetcher }).preflight({ toJSON: () => ir({ nodes: [waitNode] }) } as never),
+    ).rejects.toThrow(/deferrable-waits/);
+  });
+});
