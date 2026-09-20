@@ -47,6 +47,19 @@ export type ParameterDeclaration = {
   sensitive?: boolean;
 };
 
+export type DatasetColumn = {
+  name: string;
+  type: BptdType;
+  nullable?: boolean;
+  description?: string;
+};
+
+export type DatasetSchema = {
+  contract: "brokoli.dataset-schema/v1";
+  columns: DatasetColumn[];
+  additional_columns: "closed" | "open" | "unknown";
+};
+
 export type TaskInterface = {
   contract: "brokoli.task-interface/v1";
   inputs: { input: { value: { kind: "dataset"; row: BptdType | { kind: "unknown" } } } };
@@ -111,6 +124,25 @@ export const schema = {
    * distinct from a record field's own `required` (may-be-absent). */
   nullable: (type: BptdType): BptdType => ({ ...type, nullable: true }),
 };
+
+/** Build the portable dataset-schema/v1 contract used by source nodes. */
+export function datasetSchema(
+  columns: Record<string, BptdType>,
+  options: { additionalColumns?: DatasetSchema["additional_columns"] } = {},
+): DatasetSchema {
+  const additionalColumns = options.additionalColumns || "unknown";
+  if (additionalColumns !== "closed" && additionalColumns !== "open" && additionalColumns !== "unknown") {
+    throw new Error(`datasetSchema additionalColumns must be 'closed', 'open', or 'unknown' (got ${String(additionalColumns)})`);
+  }
+  const output = Object.entries(columns).map(([name, type]) => {
+    if (!name) throw new Error("datasetSchema column names must be non-empty");
+    if (!type || typeof type !== "object" || !("kind" in type)) {
+      throw new Error(`datasetSchema column '${name}' requires a BPTD descriptor`);
+    }
+    return { name, type };
+  });
+  return { contract: "brokoli.dataset-schema/v1", columns: output, additional_columns: additionalColumns };
+}
 
 function buildParameter(type: BptdType, opts: { default?: unknown; required?: boolean; description?: string; sensitive?: boolean } = {}): ParameterDeclaration {
   const declaration: ParameterDeclaration = { type };

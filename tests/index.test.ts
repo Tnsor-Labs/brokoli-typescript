@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Client, Connection, Param, Pipeline, cursorPages, irDigest, renderIR, validatePipeline } from "../src/index";
+import { Client, Connection, Param, Pipeline, cursorPages, datasetSchema, irDigest, renderIR, schema, validatePipeline } from "../src/index";
 
 describe("Brokoli TypeScript compiler", () => {
   test("builds the declarative IR with deterministic IDs", async () => {
@@ -54,6 +54,27 @@ describe("Brokoli TypeScript compiler", () => {
       collision_policy: "alias",
       right_alias: "customer",
     });
+  });
+  test("emits a dataset schema on a source node", () => {
+    const p = new Pipeline("Schema");
+    p.sourceApi("Fetch", {
+      url: "https://example.test",
+      schema: datasetSchema({ id: schema.int64() }),
+    });
+    expect(p.toJSON().nodes[0].config.schema).toEqual({
+      contract: "brokoli.dataset-schema/v1",
+      columns: [{ name: "id", type: { kind: "int64" } }],
+      additional_columns: "unknown",
+    });
+  });
+  test("rejects a dataset schema on a scalar API source", () => {
+    const p = new Pipeline("Schema");
+    expect(() => p.sourceApi("Fetch", {
+      url: "https://example.test",
+      response: "scalar",
+      valuePath: "count",
+      schema: datasetSchema({ id: schema.int64() }),
+    })).toThrow(/response='dataset'/);
   });
   test("rejects an alias join without a right alias", () => {
     const p = new Pipeline("Join");
