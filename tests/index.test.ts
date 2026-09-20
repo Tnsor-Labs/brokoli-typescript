@@ -45,6 +45,28 @@ describe("Brokoli TypeScript compiler", () => {
     expect(source.pipeline.toJSON().nodes[0].config).toMatchObject({ conn_id: "warehouse", pagination: { strategy: "cursor", cursor_path: "meta.next" }, execution: { max_concurrency: 2 } });
     expect(source.pipeline.toJSON().nodes[0].config.url).toContain("${param.day}");
   });
+  test("emits an explicit join collision policy and right alias", () => {
+    const p = new Pipeline("Join");
+    const left = p.sourceFile("Left", { path: "left.csv" });
+    const right = p.sourceFile("Right", { path: "right.csv" });
+    p.join("Merge", left, right, { on: "id", collisionPolicy: "alias", rightAlias: "customer" });
+    expect(p.toJSON().nodes[2].config).toMatchObject({
+      collision_policy: "alias",
+      right_alias: "customer",
+    });
+  });
+  test("rejects an alias join without a right alias", () => {
+    const p = new Pipeline("Join");
+    const left = p.sourceFile("Left", { path: "left.csv" });
+    const right = p.sourceFile("Right", { path: "right.csv" });
+    expect(() => p.join("Merge", left, right, { on: "id", collisionPolicy: "alias" })).toThrow(/rightAlias/);
+  });
+  test("rejects an invalid runtime collision policy", () => {
+    const p = new Pipeline("Join");
+    const left = p.sourceFile("Left", { path: "left.csv" });
+    const right = p.sourceFile("Right", { path: "right.csv" });
+    expect(() => p.join("Merge", left, right, { on: "id", collisionPolicy: "rename" as "prefix" })).toThrow(/collisionPolicy/);
+  });
   test("schema validation rejects fields the canonical IR does not declare", () => {
     const p = new Pipeline("Schema");
     p.sourceFile("Input", { path: "in.csv" });
