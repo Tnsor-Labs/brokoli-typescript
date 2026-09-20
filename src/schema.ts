@@ -144,6 +144,57 @@ export function datasetSchema(
   return { contract: "brokoli.dataset-schema/v1", columns: output, additional_columns: additionalColumns };
 }
 
+/** Derive a join output schema when both inputs declare dataset schemas. */
+export function joinDatasetSchema(
+  left: DatasetSchema | undefined,
+  right: DatasetSchema | undefined,
+  leftKey: string,
+  rightKey: string,
+  collisionPolicy: "error" | "prefix" | "alias" = "prefix",
+  rightAlias = "",
+): DatasetSchema | undefined {
+  if (!left || !right) return undefined;
+  const leftByName = new Map(left.columns.map((column) => [column.name, column]));
+  const rightByName = new Map(right.columns.map((column) => [column.name, column]));
+  const leftJoinColumn = leftByName.get(leftKey);
+  const rightJoinColumn = rightByName.get(rightKey);
+  if (!leftJoinColumn || !rightJoinColumn) throw new Error("declared join schemas do not contain both join keys");
+  const leftKind = leftJoinColumn.type.kind;
+  const rightKind = rightJoinColumn.type.kind;
+  if (leftKind !== rightKind && leftKind !== "unknown" && rightKind !== "unknown") {
+    throw new Error(`join keys '${leftKey}' and '${rightKey}' have incompatible declared types '${leftKind}' and '${rightKind}'`);
+  }
+  const collisions = right.columns
+    .filter((column) => leftByName.has(column.name) && !(column.name === rightKey && leftKey === rightKey))
+    .map((column) => column.name);
+  if (collisionPolicy === "error" && collisions.length) {
+    throw new Error(`join collisionPolicy='error' rejected columns: ${collisions.join(", ")}`);
+  }
+  if (collisionPolicy === "alias" && !rightAlias.trim()) {
+    throw new Error("join collisionPolicy='alias' requires rightAlias");
+  }
+
+  const output = left.columns.map((column) => structuredClone(column));
+  const used = new Set(output.map((column) => column.name));
+  for (const column of right.columns) {
+    if (column.name === rightKey && leftKey === rightKey) continue;
+    let outputName = column.name;
+    if (collisionPolicy === "alias") outputName = `${rightAlias}_${column.name}`;
+    else if (collisionPolicy === "prefix" && collisions.length) {
+      outputName = `right_${column.name}`;
+      while (used.has(outputName)) outputName = `right_${outputName}`;
+    }
+    if (used.has(outputName)) throw new Error(`join output schema cannot represent column '${outputName}' uniquely`);
+    used.add(outputName);
+    output.push({ ...structuredClone(column), name: outputName });
+  }
+  return {
+    contract: "brokoli.dataset-schema/v1",
+    columns: output,
+    additional_columns: left.additional_columns === "closed" && right.additional_columns === "closed" ? "closed" : "unknown",
+  };
+}
+
 function buildParameter(type: BptdType, opts: { default?: unknown; required?: boolean; description?: string; sensitive?: boolean } = {}): ParameterDeclaration {
   const declaration: ParameterDeclaration = { type };
   if (opts.default !== undefined) {
