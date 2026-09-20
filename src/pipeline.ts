@@ -29,6 +29,7 @@ import type { Capability, Config, Edge, IRNode, PipelineIR } from "./ir";
 import { NODE_TYPE_CAPABILITIES, irDigest, renderIR } from "./ir";
 import { PaginationStrategy } from "./pagination";
 import type { Connection } from "./resources";
+import { joinDatasetSchema } from "./schema";
 import type { BptdType, DatasetSchema, ParameterDeclaration, TaskInterface } from "./schema";
 import { buildTaskInterface } from "./schema";
 
@@ -459,12 +460,16 @@ export class Pipeline {
     if (collisionPolicy !== "alias" && options.rightAlias) {
       throw new PipelineError("join rightAlias is only valid with collisionPolicy='alias'");
     }
+    const leftSchema = left ? this.nodes.find((node) => node.id === left.nodeId)?.config.schema as DatasetSchema | undefined : undefined;
+    const rightSchema = right ? this.nodes.find((node) => node.id === right.nodeId)?.config.schema as DatasetSchema | undefined : undefined;
+    const derivedSchema = joinDatasetSchema(leftSchema, rightSchema, leftKey, rightKey, collisionPolicy, options.rightAlias || "");
     return this.register("join", name, buildConfig({
       join_type: options.how || "inner",
       left_key: leftKey,
       right_key: rightKey,
       collision_policy: collisionPolicy,
       right_alias: options.rightAlias,
+      schema: derivedSchema,
     }), [left, right].filter((r): r is NodeRef => !!r), { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
