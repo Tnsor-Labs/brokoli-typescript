@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Client, Connection, Param, Pipeline, cursorPages, datasetSchema, irDigest, renderIR, schema, validatePipeline } from "../src/index";
+import { Client, Connection, Param, Pipeline, add, column, cursorPages, datasetSchema, irDigest, literal, renderIR, schema, validatePipeline } from "../src/index";
 
 describe("Brokoli TypeScript compiler", () => {
   test("builds the declarative IR with deterministic IDs", async () => {
@@ -66,6 +66,19 @@ describe("Brokoli TypeScript compiler", () => {
       columns: [{ name: "id", type: { kind: "int64" } }],
       additional_columns: "unknown",
     });
+  });
+  test("emits native project and aggregate rules", () => {
+    const p = new Pipeline("Native");
+    const source = p.sourceFile("Input", { path: "input.json" });
+    const shaped = p.project("Project", source, { score: add(column("amount"), literal(1)) });
+    p.aggregate("Totals", shaped, { groupBy: ["status"], aggregations: [{ column: "score", function: "count_distinct", alias: "scores" }] });
+    expect(p.toJSON().nodes[1].type).toBe("project");
+    expect(p.toJSON().nodes[1].config).toEqual({
+      expression_version: 1,
+      projections: [{ name: "score", expr: { op: "add", left: { op: "column", path: ["amount"] }, right: { op: "literal", value: 1 } } }],
+    });
+    expect(p.toJSON().nodes[2].type).toBe("aggregate");
+    expect(p.toJSON().nodes[2].config).toEqual({ group_by: ["status"], agg_fields: [{ column: "score", function: "count_distinct", alias: "scores" }] });
   });
   test("rejects a dataset schema on a scalar API source", () => {
     const p = new Pipeline("Schema");

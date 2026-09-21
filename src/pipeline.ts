@@ -32,6 +32,7 @@ import type { Connection } from "./resources";
 import { joinDatasetSchema } from "./schema";
 import type { BptdType, DatasetSchema, ParameterDeclaration, TaskInterface } from "./schema";
 import { buildTaskInterface } from "./schema";
+import type { Expression } from "./expression";
 
 /** Node id base: lowercase, [a-z0-9_] only, max 20 chars, "node" fallback
  * — must match the Python SDK's allocator for cross-SDK id parity. */
@@ -437,6 +438,25 @@ export class Pipeline {
 
   transform(name: string, input?: NodeRef, options: { rules?: unknown[]; nodeKey?: string } = {}): DatasetRef {
     return this.register("transform", name, options.rules?.length ? { rules: structuredClone(options.rules) } : {}, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
+  }
+
+  project(name: string, input: NodeRef | undefined, columns: Record<string, Expression>, options: { nodeKey?: string } = {}): DatasetRef {
+    const projections = Object.entries(columns).map(([column, expr]) => {
+      if (!column || !expr || typeof expr !== "object" || !("op" in expr)) throw new PipelineError("project columns require named expressions");
+      return { name: column, expr: structuredClone(expr) };
+    });
+    if (!projections.length) throw new PipelineError("project requires a non-empty columns object");
+    return this.register("project", name, { expression_version: 1, projections }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
+  }
+
+  aggregate(name: string, input: NodeRef | undefined, options: {
+    groupBy: string[];
+    aggregations: { column: string; function: string; alias?: string }[];
+    nodeKey?: string;
+  }): DatasetRef {
+    if (!options.groupBy.length) throw new PipelineError("aggregate requires a non-empty groupBy array");
+    if (!options.aggregations.length) throw new PipelineError("aggregate requires a non-empty aggregations array");
+    return this.register("aggregate", name, { group_by: [...options.groupBy], agg_fields: structuredClone(options.aggregations) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
   join(name: string, left?: NodeRef, right?: NodeRef, options: {
