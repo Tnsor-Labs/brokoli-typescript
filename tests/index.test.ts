@@ -98,7 +98,7 @@ describe("Brokoli TypeScript compiler", () => {
       projections: [{ name: "score", expr: { op: "add", left: { op: "column", path: ["amount"] }, right: { op: "literal", value: 1 } } }],
     });
     expect(p.toJSON().nodes[2].type).toBe("aggregate");
-    expect(p.toJSON().nodes[2].config).toEqual({ group_by: ["status"], agg_fields: [{ column: "score", function: "count_distinct", alias: "scores" }] });
+    expect(p.toJSON().nodes[2].config).toEqual({ expression_version: 1, group_by: ["status"], agg_fields: [{ column: "score", function: "count_distinct", alias: "scores" }] });
   });
   test("emits native filter predicates and code output schemas", () => {
     const p = new Pipeline("Native filter");
