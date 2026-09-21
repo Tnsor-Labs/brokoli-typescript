@@ -472,7 +472,7 @@ export class Pipeline {
   }): DatasetRef {
     if (!options.groupBy.length) throw new PipelineError("aggregate requires a non-empty groupBy array");
     if (!options.aggregations.length) throw new PipelineError("aggregate requires a non-empty aggregations array");
-    return this.register("aggregate", name, { group_by: [...options.groupBy], agg_fields: structuredClone(options.aggregations) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
+    return this.register("aggregate", name, { expression_version: 1, group_by: [...options.groupBy], agg_fields: structuredClone(options.aggregations) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
   filterRows(name: string, input: NodeRef | undefined, predicate: Expression, options: { nodeKey?: string } = {}): DatasetRef {
