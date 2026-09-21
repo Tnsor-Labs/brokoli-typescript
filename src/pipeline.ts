@@ -433,10 +433,34 @@ export class Pipeline {
     return this.register("transform", name, options.rules?.length ? { rules: structuredClone(options.rules) } : {}, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
-  join(name: string, left?: NodeRef, right?: NodeRef, options: { on?: string; leftKey?: string; rightKey?: string; how?: string; nodeKey?: string } = {}): DatasetRef {
+  join(name: string, left?: NodeRef, right?: NodeRef, options: {
+    on?: string;
+    leftKey?: string;
+    rightKey?: string;
+    how?: string;
+    nodeKey?: string;
+    collisionPolicy?: "error" | "prefix" | "alias";
+    rightAlias?: string;
+  } = {}): DatasetRef {
     const leftKey = options.leftKey || options.on || "";
     const rightKey = options.rightKey || leftKey;
-    return this.register("join", name, { join_type: options.how || "inner", left_key: leftKey, right_key: rightKey }, [left, right].filter((r): r is NodeRef => !!r), { nodeKey: options.nodeKey, kind: "dataset" });
+    const collisionPolicy = options.collisionPolicy || "prefix";
+    if (collisionPolicy !== "error" && collisionPolicy !== "prefix" && collisionPolicy !== "alias") {
+      throw new PipelineError(`join collisionPolicy must be 'error', 'prefix', or 'alias' (got ${String(collisionPolicy)})`);
+    }
+    if (collisionPolicy === "alias" && !options.rightAlias?.trim()) {
+      throw new PipelineError("join collisionPolicy='alias' requires rightAlias");
+    }
+    if (collisionPolicy !== "alias" && options.rightAlias) {
+      throw new PipelineError("join rightAlias is only valid with collisionPolicy='alias'");
+    }
+    return this.register("join", name, buildConfig({
+      join_type: options.how || "inner",
+      left_key: leftKey,
+      right_key: rightKey,
+      collision_policy: collisionPolicy,
+      right_alias: options.rightAlias,
+    }), [left, right].filter((r): r is NodeRef => !!r), { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
   qualityCheck(name: string, input?: NodeRef, options: { rules?: unknown[]; nodeKey?: string } = {}): NodeRef {
