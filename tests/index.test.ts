@@ -119,6 +119,23 @@ describe("Brokoli TypeScript compiler", () => {
       additional_columns: "closed",
     });
   });
+  test("preserves decimal precision in a derived join schema", () => {
+    const p = new Pipeline("Join Decimal Schema");
+    const left = p.sourceApi("Left", {
+      url: "https://example.test/left",
+      schema: datasetSchema({ id: schema.int64(), amount: schema.decimal({ precision: 20, scale: 4 }) }),
+    });
+    const right = p.sourceApi("Right", {
+      url: "https://example.test/right",
+      schema: datasetSchema({ id: schema.int64(), label: schema.string() }),
+    });
+    p.join("Merge", left, right, { on: "id" });
+    const derived = p.toJSON().nodes[2].config.schema as { columns: unknown[] };
+    expect(derived.columns).toContainEqual({
+      name: "amount",
+      type: { kind: "decimal", precision: 20, scale: 4 },
+    });
+  });
   test("rejects incompatible declared join key types", () => {
     const p = new Pipeline("Join Schema");
     const left = p.sourceApi("Left", { url: "https://example.test/left", schema: datasetSchema({ id: schema.int64() }) });
