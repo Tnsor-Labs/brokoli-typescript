@@ -47,6 +47,19 @@ export type ParameterDeclaration = {
   sensitive?: boolean;
 };
 
+export type DatasetColumn = {
+  name: string;
+  type: BptdType;
+  nullable?: boolean;
+  description?: string;
+};
+
+export type DatasetSchema = {
+  contract: "brokoli.dataset-schema/v1";
+  columns: DatasetColumn[];
+  additional_columns: "closed" | "open" | "unknown";
+};
+
 export type TaskInterface = {
   contract: "brokoli.task-interface/v1";
   inputs: { input: { value: { kind: "dataset"; row: BptdType | { kind: "unknown" } } } };
@@ -111,6 +124,76 @@ export const schema = {
    * distinct from a record field's own `required` (may-be-absent). */
   nullable: (type: BptdType): BptdType => ({ ...type, nullable: true }),
 };
+
+/** Build the portable dataset-schema/v1 contract used by source nodes. */
+export function datasetSchema(
+  columns: Record<string, BptdType>,
+  options: { additionalColumns?: DatasetSchema["additional_columns"] } = {},
+): DatasetSchema {
+  const additionalColumns = options.additionalColumns || "unknown";
+  if (additionalColumns !== "closed" && additionalColumns !== "open" && additionalColumns !== "unknown") {
+    throw new Error(`datasetSchema additionalColumns must be 'closed', 'open', or 'unknown' (got ${String(additionalColumns)})`);
+  }
+  const output = Object.entries(columns).map(([name, type]) => {
+    if (!name) throw new Error("datasetSchema column names must be non-empty");
+    if (!type || typeof type !== "object" || !("kind" in type)) {
+      throw new Error(`datasetSchema column '${name}' requires a BPTD descriptor`);
+    }
+    return { name, type };
+  });
+  return { contract: "brokoli.dataset-schema/v1", columns: output, additional_columns: additionalColumns };
+}
+
+/** Derive a join output schema when both inputs declare dataset schemas. */
+export function joinDatasetSchema(
+  left: DatasetSchema | undefined,
+  right: DatasetSchema | undefined,
+  leftKey: string,
+  rightKey: string,
+  collisionPolicy: "error" | "prefix" | "alias" = "prefix",
+  rightAlias = "",
+): DatasetSchema | undefined {
+  if (!left || !right) return undefined;
+  const leftByName = new Map(left.columns.map((column) => [column.name, column]));
+  const rightByName = new Map(right.columns.map((column) => [column.name, column]));
+  const leftJoinColumn = leftByName.get(leftKey);
+  const rightJoinColumn = rightByName.get(rightKey);
+  if (!leftJoinColumn || !rightJoinColumn) throw new Error("declared join schemas do not contain both join keys");
+  const leftKind = leftJoinColumn.type.kind;
+  const rightKind = rightJoinColumn.type.kind;
+  if (leftKind !== rightKind && leftKind !== "unknown" && rightKind !== "unknown") {
+    throw new Error(`join keys '${leftKey}' and '${rightKey}' have incompatible declared types '${leftKind}' and '${rightKind}'`);
+  }
+  const collisions = right.columns
+    .filter((column) => leftByName.has(column.name) && !(column.name === rightKey && leftKey === rightKey))
+    .map((column) => column.name);
+  if (collisionPolicy === "error" && collisions.length) {
+    throw new Error(`join collisionPolicy='error' rejected columns: ${collisions.join(", ")}`);
+  }
+  if (collisionPolicy === "alias" && !rightAlias.trim()) {
+    throw new Error("join collisionPolicy='alias' requires rightAlias");
+  }
+
+  const output = left.columns.map((column) => structuredClone(column));
+  const used = new Set(output.map((column) => column.name));
+  for (const column of right.columns) {
+    if (column.name === rightKey && leftKey === rightKey) continue;
+    let outputName = column.name;
+    if (collisionPolicy === "alias") outputName = `${rightAlias}_${column.name}`;
+    else if (collisionPolicy === "prefix" && collisions.length) {
+      outputName = `right_${column.name}`;
+      while (used.has(outputName)) outputName = `right_${outputName}`;
+    }
+    if (used.has(outputName)) throw new Error(`join output schema cannot represent column '${outputName}' uniquely`);
+    used.add(outputName);
+    output.push({ ...structuredClone(column), name: outputName });
+  }
+  return {
+    contract: "brokoli.dataset-schema/v1",
+    columns: output,
+    additional_columns: left.additional_columns === "closed" && right.additional_columns === "closed" ? "closed" : "unknown",
+  };
+}
 
 function buildParameter(type: BptdType, opts: { default?: unknown; required?: boolean; description?: string; sensitive?: boolean } = {}): ParameterDeclaration {
   const declaration: ParameterDeclaration = { type };

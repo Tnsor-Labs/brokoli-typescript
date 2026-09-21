@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Client, Connection, Param, Pipeline, cursorPages, irDigest, renderIR, validatePipeline } from "../src/index";
+import { Client, Connection, Param, Pipeline, cursorPages, datasetSchema, irDigest, renderIR, schema, validatePipeline } from "../src/index";
 
 describe("Brokoli TypeScript compiler", () => {
   test("builds the declarative IR with deterministic IDs", async () => {
@@ -54,6 +54,54 @@ describe("Brokoli TypeScript compiler", () => {
       collision_policy: "alias",
       right_alias: "customer",
     });
+  });
+  test("emits a dataset schema on a source node", () => {
+    const p = new Pipeline("Schema");
+    p.sourceApi("Fetch", {
+      url: "https://example.test",
+      schema: datasetSchema({ id: schema.int64() }),
+    });
+    expect(p.toJSON().nodes[0].config.schema).toEqual({
+      contract: "brokoli.dataset-schema/v1",
+      columns: [{ name: "id", type: { kind: "int64" } }],
+      additional_columns: "unknown",
+    });
+  });
+  test("rejects a dataset schema on a scalar API source", () => {
+    const p = new Pipeline("Schema");
+    expect(() => p.sourceApi("Fetch", {
+      url: "https://example.test",
+      response: "scalar",
+      valuePath: "count",
+     schema: datasetSchema({ id: schema.int64() }),
+    })).toThrow(/response='dataset'/);
+  });
+  test("propagates an alias join schema from declared inputs", () => {
+    const p = new Pipeline("Join Schema");
+    const left = p.sourceApi("Left", {
+      url: "https://example.test/left",
+      schema: datasetSchema({ id: schema.int64(), name: schema.string() }, { additionalColumns: "closed" }),
+    });
+    const right = p.sourceApi("Right", {
+      url: "https://example.test/right",
+      schema: datasetSchema({ id: schema.int64(), name: schema.string() }, { additionalColumns: "closed" }),
+    });
+    p.join("Merge", left, right, { on: "id", collisionPolicy: "alias", rightAlias: "right_row" });
+    expect(p.toJSON().nodes[2].config.schema).toEqual({
+      contract: "brokoli.dataset-schema/v1",
+      columns: [
+        { name: "id", type: { kind: "int64" } },
+        { name: "name", type: { kind: "string" } },
+        { name: "right_row_name", type: { kind: "string" } },
+      ],
+      additional_columns: "closed",
+    });
+  });
+  test("rejects incompatible declared join key types", () => {
+    const p = new Pipeline("Join Schema");
+    const left = p.sourceApi("Left", { url: "https://example.test/left", schema: datasetSchema({ id: schema.int64() }) });
+    const right = p.sourceApi("Right", { url: "https://example.test/right", schema: datasetSchema({ id: schema.string() }) });
+    expect(() => p.join("Merge", left, right, { on: "id" })).toThrow(/incompatible declared types/);
   });
   test("rejects an alias join without a right alias", () => {
     const p = new Pipeline("Join");

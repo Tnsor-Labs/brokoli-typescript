@@ -39,8 +39,8 @@ export {
   requiredExecutionFeatures,
 } from "./ir";
 export type { Capability, Config, Edge, IRNode, Json, PipelineIR } from "./ir";
-export { buildTaskInterface, parameter, schema } from "./schema";
-export type { BptdType, ParameterDeclaration, RecordField, RecordFieldSpec, TaskInterface } from "./schema";
+export { buildTaskInterface, datasetSchema, joinDatasetSchema, parameter, schema } from "./schema";
+export type { BptdType, DatasetColumn, DatasetSchema, ParameterDeclaration, RecordField, RecordFieldSpec, TaskInterface } from "./schema";
 export {
   ArtifactRef,
   CollectionRef,
