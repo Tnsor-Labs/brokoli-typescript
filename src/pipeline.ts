@@ -29,7 +29,7 @@ import type { Capability, Config, Edge, IRNode, PipelineIR } from "./ir";
 import { NODE_TYPE_CAPABILITIES, irDigest, renderIR } from "./ir";
 import { PaginationStrategy } from "./pagination";
 import type { Connection } from "./resources";
-import { joinDatasetSchema } from "./schema";
+import { joinDatasetSchema, projectDatasetSchema } from "./schema";
 import type { BptdType, DatasetSchema, ParameterDeclaration, TaskInterface } from "./schema";
 import { buildTaskInterface } from "./schema";
 import type { Expression } from "./expression";
@@ -446,7 +446,12 @@ export class Pipeline {
       return { name: column, expr: structuredClone(expr) };
     });
     if (!projections.length) throw new PipelineError("project requires a non-empty columns object");
-    return this.register("project", name, { expression_version: 1, projections }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
+    const inputSchema = input ? this.nodes.find((node) => node.id === input.nodeId)?.config.schema as DatasetSchema | undefined : undefined;
+    return this.register("project", name, {
+      expression_version: 1,
+      projections,
+      schema: projectDatasetSchema(inputSchema, projections),
+    }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
   aggregate(name: string, input: NodeRef | undefined, options: {

@@ -195,6 +195,66 @@ export function joinDatasetSchema(
   };
 }
 
+/** Derive a closed output schema for a native projection. */
+export function projectDatasetSchema(
+  input: DatasetSchema | undefined,
+  projections: { name: string; expr: Record<string, unknown> }[],
+): DatasetSchema | undefined {
+  if (!input) return undefined;
+  return {
+    contract: "brokoli.dataset-schema/v1",
+    columns: projections.map(({ name, expr }) => ({ name, type: expressionType(expr, input, name) })),
+    additional_columns: "closed",
+  };
+}
+
+function expressionType(expr: Record<string, unknown>, input: DatasetSchema, outputName = "output"): BptdType {
+  const unknown: BptdType = { kind: "unknown" };
+  switch (expr.op) {
+    case "column": {
+      const path = expr.path;
+      if (!Array.isArray(path) || typeof path[0] !== "string") throw new Error(`project column '${outputName}' has an invalid column path`);
+      let current: BptdType | undefined = input.columns.find((column) => column.name === path[0])?.type;
+      if (!current) throw new Error(`project column '${outputName}' references missing field '${path[0]}'`);
+      for (const part of path.slice(1)) {
+        if (current.kind !== "record") throw new Error(`project column '${outputName}' references missing nested field '${part}'`);
+        current = current.fields.find((field) => field.name === part)?.type;
+        if (!current) throw new Error(`project column '${outputName}' references missing nested field '${part}'`);
+      }
+      return structuredClone(current);
+    }
+    case "literal": {
+      if (typeof expr.value === "boolean") return { kind: "boolean" };
+      if (typeof expr.value === "string") return { kind: "string" };
+      if (typeof expr.value === "number") return { kind: Number.isInteger(expr.value) ? "int64" : "float64" };
+      return unknown;
+    }
+    case "concat": return { kind: "string" };
+    case "eq": case "neq": case "lt": case "lte": case "gt": case "gte":
+    case "and": case "or": case "not": case "is_null": return { kind: "boolean" };
+    case "add": case "subtract": case "multiply": case "divide": {
+      const left = expressionType(expr.left as Record<string, unknown>, input, outputName);
+      const right = expressionType(expr.right as Record<string, unknown>, input, outputName);
+      if (left.kind === "decimal" && right.kind === "decimal" && expr.op !== "divide") return left;
+      if (left.kind === "float64" || right.kind === "float64" || expr.op === "divide") return { kind: "float64" };
+      if (left.kind === "int64" && right.kind === "int64") return { kind: "int64" };
+      return unknown;
+    }
+    case "coalesce": {
+      if (!Array.isArray(expr.args)) return unknown;
+      return expr.args.map((arg) => expressionType(arg as Record<string, unknown>, input, outputName)).find((type) => type.kind !== "unknown") || unknown;
+    }
+    case "case_when": {
+      if (!Array.isArray(expr.branches)) return unknown;
+      const branchTypes = expr.branches.map((branch) => expressionType((branch as Record<string, unknown>).then as Record<string, unknown>, input, outputName));
+      const elseType = expressionType(expr.else as Record<string, unknown>, input, outputName);
+      if (branchTypes.length && branchTypes.every((type) => type.kind === branchTypes[0].kind) && elseType.kind === branchTypes[0].kind) return branchTypes[0];
+      return unknown;
+    }
+    default: return unknown;
+  }
+}
+
 function buildParameter(type: BptdType, opts: { default?: unknown; required?: boolean; description?: string; sensitive?: boolean } = {}): ParameterDeclaration {
   const declaration: ParameterDeclaration = { type };
   if (opts.default !== undefined) {
