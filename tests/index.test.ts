@@ -136,6 +136,24 @@ describe("Brokoli TypeScript compiler", () => {
       type: { kind: "decimal", precision: 20, scale: 4 },
     });
   });
+  test("preserves referenced field schema in a native project", () => {
+    const p = new Pipeline("Project Schema");
+    const source = p.sourceApi("Source", {
+      url: "https://example.test/source",
+      schema: datasetSchema({ amount: schema.decimal({ precision: 20, scale: 4 }) }),
+    });
+    p.project("Project", source, { total: column("amount") });
+    const derived = p.toJSON().nodes[1].config.schema as { columns: unknown[] };
+    expect(derived.columns).toEqual([{ name: "total", type: { kind: "decimal", precision: 20, scale: 4 } }]);
+  });
+  test("rejects a native project that references a missing declared field", () => {
+    const p = new Pipeline("Project Missing Field");
+    const source = p.sourceApi("Source", {
+      url: "https://example.test/source",
+      schema: datasetSchema({ amount: schema.decimal({ precision: 20, scale: 4 }) }),
+    });
+    expect(() => p.project("Project", source, { total: column("missing") })).toThrow(/missing field/);
+  });
   test("rejects incompatible declared join key types", () => {
     const p = new Pipeline("Join Schema");
     const left = p.sourceApi("Left", { url: "https://example.test/left", schema: datasetSchema({ id: schema.int64() }) });
