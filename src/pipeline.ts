@@ -459,6 +459,11 @@ export class Pipeline {
     return this.register("aggregate", name, { group_by: [...options.groupBy], agg_fields: structuredClone(options.aggregations) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
+  filterRows(name: string, input: NodeRef | undefined, predicate: Expression, options: { nodeKey?: string } = {}): DatasetRef {
+    if (!predicate || typeof predicate !== "object" || !("op" in predicate)) throw new PipelineError("filter requires a predicate expression");
+    return this.register("filter", name, { expression_version: 1, predicate: structuredClone(predicate) }, input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
+  }
+
   join(name: string, left?: NodeRef, right?: NodeRef, options: {
     on?: string;
     leftKey?: string;
@@ -582,7 +587,7 @@ export class Pipeline {
     }), [], { nodeKey: options.nodeKey });
   }
 
-  code(name: string, input?: NodeRef, options: { language?: "python" | "typescript"; script?: string; helpers?: Helpers; pythonPath?: string; nodePath?: string; retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; nodeKey?: string } = {}): NodeRef {
+  code(name: string, input?: NodeRef, options: { language?: "python" | "typescript"; script?: string; helpers?: Helpers; pythonPath?: string; nodePath?: string; retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; outputSchema?: DatasetSchema; nodeKey?: string } = {}): NodeRef {
     return this.register("code", name, buildConfig({
       language: options.language || "python",
       script: `${helpersPreamble(options.helpers)}${options.script || ""}`,
@@ -593,6 +598,7 @@ export class Pipeline {
       timeout: options.timeout,
       max_memory_mb: options.maxMemoryMb,
       max_cpu_seconds: options.maxCpuSeconds,
+      output_schema: options.outputSchema,
     }), input ? [input] : [], { nodeKey: options.nodeKey });
   }
 
