@@ -248,7 +248,7 @@ export function requiredExecutionFeatures(ir: PipelineIR): string[] {
     if (node.type === "union") features.add("union");
     if (node.type === "dataset_map") features.add("dataset-map");
     if (node.type === "dataset_filter") features.add("dataset-filter");
-    if (node.config.execution) features.add("pagination-checkpoints");
+    if (node.type === "source_api" && node.config.execution && node.config.pagination) features.add("pagination-checkpoints");
     // A deferrable wait parks the run in the scheduler rather than
     // occupying a worker. A server without the watcher has no handler
     // for the node type at all -- it reaches `built-in node type "wait"
