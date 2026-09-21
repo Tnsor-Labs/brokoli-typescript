@@ -1,7 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { buildTaskInterface, parameter, schema } from "../src/schema";
+import { buildTaskInterface, datasetSchema, parameter, schema } from "../src/schema";
 
 describe("schema builders", () => {
+  test("dataset schemas preserve ordered BPTD columns", () => {
+    expect(datasetSchema({ id: schema.int64(), name: schema.string({ nullable: true }) }, { additionalColumns: "closed" })).toEqual({
+      contract: "brokoli.dataset-schema/v1",
+      columns: [
+        { name: "id", type: { kind: "int64" } },
+        { name: "name", type: { kind: "string", nullable: true } },
+      ],
+      additional_columns: "closed",
+    });
+  });
+
   test("scalars build a bare kind", () => {
     expect(schema.int64()).toEqual({ kind: "int64" });
     expect(schema.float64()).toEqual({ kind: "float64" });
