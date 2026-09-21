@@ -19,6 +19,14 @@ describe("schema builders", () => {
     expect(schema.string()).toEqual({ kind: "string" });
   });
 
+  test("decimal carries optional precision and scale", () => {
+    expect(schema.decimal({ precision: 20, scale: 4 })).toEqual({
+      kind: "decimal",
+      precision: 20,
+      scale: 4,
+    });
+  });
+
   test("nullable wraps a type without mutating the original", () => {
     const t = schema.string();
     const n = schema.nullable(t);

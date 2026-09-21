@@ -22,7 +22,7 @@ export type BptdType =
   | { kind: "string"; nullable?: boolean; description?: string }
   | { kind: "boolean"; nullable?: boolean; description?: string }
   | { kind: "bytes"; nullable?: boolean; description?: string }
-  | { kind: "decimal"; nullable?: boolean; description?: string }
+  | { kind: "decimal"; precision?: number; scale?: number; nullable?: boolean; description?: string }
   | { kind: "date"; nullable?: boolean; description?: string }
   | { kind: "timestamp"; nullable?: boolean; description?: string }
   | { kind: "duration"; nullable?: boolean; description?: string }
@@ -76,7 +76,7 @@ export const schema = {
   string: (opts: { nullable?: boolean; description?: string } = {}): BptdType => ({ kind: "string", ...opts }),
   boolean: (opts: { nullable?: boolean; description?: string } = {}): BptdType => ({ kind: "boolean", ...opts }),
   bytes: (opts: { nullable?: boolean; description?: string } = {}): BptdType => ({ kind: "bytes", ...opts }),
-  decimal: (opts: { nullable?: boolean; description?: string } = {}): BptdType => ({ kind: "decimal", ...opts }),
+  decimal: (opts: { precision?: number; scale?: number; nullable?: boolean; description?: string } = {}): BptdType => ({ kind: "decimal", ...opts }),
   date: (opts: { nullable?: boolean; description?: string } = {}): BptdType => ({ kind: "date", ...opts }),
   timestamp: (opts: { nullable?: boolean; description?: string } = {}): BptdType => ({ kind: "timestamp", ...opts }),
   duration: (opts: { nullable?: boolean; description?: string } = {}): BptdType => ({ kind: "duration", ...opts }),
