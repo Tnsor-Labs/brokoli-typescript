@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Client, Connection, Param, Pipeline, add, column, cursorPages, datasetSchema, irDigest, literal, renderIR, schema, validatePipeline } from "../src/index";
+import { Client, Connection, Param, Pipeline, add, caseWhen, column, cursorPages, datasetSchema, eq, gte, irDigest, literal, renderIR, schema, validatePipeline } from "../src/index";
 
 describe("Brokoli TypeScript compiler", () => {
   test("builds the declarative IR with deterministic IDs", async () => {
@@ -79,6 +79,15 @@ describe("Brokoli TypeScript compiler", () => {
     });
     expect(p.toJSON().nodes[2].type).toBe("aggregate");
     expect(p.toJSON().nodes[2].config).toEqual({ group_by: ["status"], agg_fields: [{ column: "score", function: "count_distinct", alias: "scores" }] });
+  });
+  test("emits native filter predicates and code output schemas", () => {
+    const p = new Pipeline("Native filter");
+    const source = p.sourceFile("Input", { path: "input.json" });
+    const filtered = p.filterRows("Filter", source, eq(column("status"), literal("ready")));
+    p.code("Enrich", filtered, { script: "output_data = { columns, rows }", outputSchema: datasetSchema({ id: schema.int64() }) });
+    expect(p.toJSON().nodes[1]).toMatchObject({ type: "filter", config: { expression_version: 1, predicate: { op: "eq" } } });
+    expect((p.toJSON().nodes[2].config.output_schema as { contract: string }).contract).toBe("brokoli.dataset-schema/v1");
+    expect(caseWhen([[gte(column("amount"), 1), "positive"]], "zero").op).toBe("case_when");
   });
   test("rejects a dataset schema on a scalar API source", () => {
     const p = new Pipeline("Schema");
