@@ -39,7 +39,7 @@ export {
   requiredExecutionFeatures,
 } from "./ir";
 export type { Capability, Config, Edge, IRNode, Json, PipelineIR } from "./ir";
-export { add, coalesce, column, concat, divide, literal, multiply, subtract } from "./expression";
+export { add, and, caseWhen, coalesce, column, concat, divide, eq, gt, gte, isNull, literal, lt, lte, multiply, neq, not, or, subtract } from "./expression";
 export type { Expression } from "./expression";
 export { buildTaskInterface, datasetSchema, joinDatasetSchema, parameter, schema } from "./schema";
 export type { BptdType, DatasetColumn, DatasetSchema, ParameterDeclaration, RecordField, RecordFieldSpec, TaskInterface } from "./schema";

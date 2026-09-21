@@ -89,6 +89,7 @@ export const NODE_TYPE_CAPABILITIES: Record<string, Capability[]> = {
   dataset_filter: ["compute", "dataset-output"],
   project: ["compute", "dataset-output"],
   aggregate: ["compute", "dataset-output"],
+  filter: ["compute", "dataset-output"],
   wait: ["compute", "dataset-output"],
 };
 
