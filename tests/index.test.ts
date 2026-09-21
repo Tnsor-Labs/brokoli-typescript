@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Client, Connection, Param, Pipeline, add, caseWhen, column, cursorPages, datasetSchema, eq, gte, irDigest, literal, renderIR, schema, validatePipeline } from "../src/index";
+import { Client, Connection, Param, Pipeline, add, caseWhen, column, cursorPages, datasetSchema, eq, gte, highThroughput, irDigest, literal, publicApiSafe, renderIR, schema, strict, validatePipeline } from "../src/index";
 
 describe("Brokoli TypeScript compiler", () => {
   test("builds the declarative IR with deterministic IDs", async () => {
@@ -44,6 +44,26 @@ describe("Brokoli TypeScript compiler", () => {
     const source = p.sourceApi("Fetch", { url: `https://example.test/${new Param("day")}`, connId: new Connection("warehouse"), pagination: cursorPages("meta.next", "cursor").withExecution({ max_concurrency: 2 }) });
     expect(source.pipeline.toJSON().nodes[0].config).toMatchObject({ conn_id: "warehouse", pagination: { strategy: "cursor", cursor_path: "meta.next" }, execution: { max_concurrency: 2 } });
     expect(source.pipeline.toJSON().nodes[0].config.url).toContain("${param.day}");
+  });
+  test("expands versioned execution profiles and merges page overrides", () => {
+    const p = new Pipeline("Profiles");
+    p.sourceApi("Fetch", {
+      url: "https://example.test",
+      executionProfile: publicApiSafe(),
+      pagination: cursorPages("meta.next", "cursor").withExecution({ max_concurrency: 4 }),
+    });
+    expect(p.toJSON().nodes[0].config.execution).toMatchObject({
+      profile: { name: "public_api_safe", version: 1, strict: false },
+      max_concurrency: 4,
+      requests_per_second: 2,
+      page_max_retries: 3,
+    });
+    expect(p.toJSON().nodes[0].config).toMatchObject({ timeout: 30, max_retries: 3, retry_delay: 1000 });
+    expect(highThroughput({ requestsPerSecond: 20 }).requests_per_second).toBe(20);
+    expect(strict().profile).toEqual({ name: "strict", version: 1, strict: true });
+    const strictPipeline = new Pipeline("Strict");
+    strictPipeline.sourceApi("Fetch", { url: "https://example.test", profile: strict(), pagination: cursorPages("next", "cursor").withExecution({ max_concurrency: 2 }) });
+    expect(validatePipeline(strictPipeline).errors.some((issue) => issue.field === "execution.max_concurrency")).toBe(true);
   });
   test("emits an explicit join collision policy and right alias", () => {
     const p = new Pipeline("Join");

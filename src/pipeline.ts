@@ -404,7 +404,7 @@ export class Pipeline {
     options: {
       url?: string; method?: string; headers?: Config; body?: unknown; connId?: string | Connection;
       params?: Config; response?: "dataset" | "scalar" | "artifact"; records?: string; valuePath?: string;
-      pagination?: Config | PaginationStrategy; retries?: number; retryBackoff?: string; retryDelay?: number;
+      pagination?: Config | PaginationStrategy; profile?: Config; executionProfile?: Config; retries?: number; retryBackoff?: string; retryDelay?: number;
       timeout?: number; schema?: DatasetSchema; nodeKey?: string;
     } = {},
   ): NodeRef {
@@ -414,6 +414,12 @@ export class Pipeline {
     }
     const pagination = options.pagination instanceof PaginationStrategy ? options.pagination.toConfig() : options.pagination;
     const execution = options.pagination instanceof PaginationStrategy ? options.pagination.executionConfig() : undefined;
+    if (options.profile && options.executionProfile) throw new PipelineError("sourceApi accepts only one of profile or executionProfile");
+    const profile = options.executionProfile || options.profile ? { ...(options.executionProfile || options.profile) } : undefined;
+    const profileExecution = profile ? { ...profile } : undefined;
+    for (const key of ["timeout", "max_retries", "retry_backoff", "retry_delay"]) {
+      if (profileExecution && key in profileExecution) delete profileExecution[key];
+    }
     const config = buildConfig({
       url: options.url || "",
       method: options.method || "GET",
@@ -425,13 +431,18 @@ export class Pipeline {
       records: options.records,
       value_path: options.valuePath,
       pagination,
-      execution,
+      execution: profileExecution ? { ...profileExecution, ...execution } : execution,
       max_retries: options.retries,
       retry_backoff: options.retries === undefined ? undefined : options.retryBackoff || "exponential",
       retry_delay: options.retryDelay,
       timeout: options.timeout,
       schema: options.schema,
     });
+    if (profile) {
+      for (const [sourceKey, configKey] of [["timeout", "timeout"], ["max_retries", "max_retries"], ["retry_backoff", "retry_backoff"], ["retry_delay", "retry_delay"]] as const) {
+        if (profile[sourceKey] !== undefined && config[configKey] === undefined) config[configKey] = profile[sourceKey];
+      }
+    }
     config._schema_hint = "api_response";
     return this.register("source_api", name, config, [], { nodeKey: options.nodeKey, kind: response });
   }

@@ -65,6 +65,7 @@ export {
   offsetPages,
 } from "./pagination";
 export { credentialsPath, forgetToken, loadToken, storeToken } from "./credentials";
+export { highThroughput, publicApiSafe, strict } from "./executionProfiles";
 export { deviceLogin, pollForToken, requestDeviceAuthorization } from "./device";
 export type { DeviceGrant, DeviceLoginOptions } from "./device";
 export { Client, Run, TERMINAL_RUN_STATUSES, login } from "./client";

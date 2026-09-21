@@ -76,6 +76,24 @@ export function validatePipeline(pipeline: Pipeline): ValidationResult {
         break;
       case "source_api":
         if (!c.url) error(node.name, "url", "Source API requires a 'url'");
+        const execution = c.execution as Record<string, any> | undefined;
+        if (execution?.profile) {
+          const profile = execution.profile;
+          if (profile === null || typeof profile !== "object" || profile.version !== 1 || typeof profile.name !== "string" || typeof profile.strict !== "boolean") {
+            error(node.name, "execution.profile", "Execution profile must be a version 1 object with name and strict fields");
+          }
+          for (const field of ["max_concurrency", "requests_per_second", "retry_scope", "checkpoint_every", "page_max_retries", "page_retry_backoff"]) {
+            if (!(field in execution)) error(node.name, `execution.${field}`, `Profile must expand execution.${field} explicitly`);
+          }
+          for (const field of ["timeout", "max_retries", "retry_backoff", "retry_delay"]) {
+            if (!(field in c)) error(node.name, field, `Profile must expand ${field} explicitly`);
+          }
+          const pagination = c.pagination as Record<string, any> | undefined;
+          const strategy = pagination?.strategy;
+          if (profile.strict && ["cursor", "next_link", "link_header"].includes(strategy) && execution.max_concurrency > 1) {
+            error(node.name, "execution.max_concurrency", `Strict profile cannot request concurrency for sequential pagination strategy ${strategy}`);
+          }
+        }
         break;
       case "sink_file":
         if (!c.path) error(node.name, "path", "Sink File requires a 'path'");
