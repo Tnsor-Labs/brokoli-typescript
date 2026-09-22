@@ -375,8 +375,8 @@ export class Pipeline {
 
   // ── Node factories ────────────────────────────────────────────────
 
-  sourceFile(name: string, options: { path?: string; format?: string; schema?: DatasetSchema; nodeKey?: string } = {}): DatasetRef {
-    return this.register("source_file", name, buildConfig({ path: options.path || "", format: options.format || "csv", schema: options.schema }), [], { nodeKey: options.nodeKey, kind: "dataset" });
+  sourceFile(name: string, options: { path?: string; format?: string; schema?: DatasetSchema; connId?: string | Connection; nodeKey?: string } = {}): DatasetRef {
+    return this.register("source_file", name, buildConfig({ path: options.path || "", format: options.format || "csv", schema: options.schema, conn_id: options.connId }), [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
   sourceDb(
@@ -518,10 +518,11 @@ export class Pipeline {
     return this.register("quality_check", name, options.rules?.length ? { rules: structuredClone(options.rules) } : {}, input ? [input] : [], { nodeKey: options.nodeKey });
   }
 
-  sinkFile(name: string, input?: NodeRef, options: { path?: string; format?: string; compress?: string; retries?: number; retryBackoff?: string; retryDelay?: number; timeout?: number; nodeKey?: string } = {}): NodeRef {
+  sinkFile(name: string, input?: NodeRef, options: { path?: string; format?: string; compress?: string; connId?: string | Connection; retries?: number; retryBackoff?: string; retryDelay?: number; timeout?: number; nodeKey?: string } = {}): NodeRef {
     return this.register("sink_file", name, buildConfig({
       path: options.path || "",
       format: options.format || "csv",
+      conn_id: options.connId,
       compress: options.compress,
       max_retries: options.retries,
       retry_backoff: options.retries === undefined ? undefined : options.retryBackoff || "exponential",
