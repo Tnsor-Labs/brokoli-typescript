@@ -139,6 +139,56 @@ real AST inspection, which this SDK's "no bytecode inspection" v1
 contract does not have, so it still surfaces as a remote
 `ReferenceError` inside the worker rather than a local error.
 
+### Waits, contracts, shell commands and migrations
+
+`wait` parks a run until a condition holds without holding a concurrency
+slot; the server re-checks every `pollInterval` (default 30s) and fails
+the node after `timeout` (default 6h). Durations are Go duration strings
+or seconds, and any `input` passes through:
+
+```ts
+const ready = pipeline.wait("Export landed", { condition: "file_exists", path: "/data/exports/*.csv", pollInterval: "5m", timeout: "4h" });
+pipeline.edge(ready, pipeline.sourceFile("Read export", { path: "/data/exports/orders.csv" }));
+pipeline.wait("Upstream done", { condition: "pipeline", pipelineId: "nightly-load" });
+```
+
+`contractGate` enforces an actually-fine contract: cleared records flow
+on, quarantined ones are dropped, and a `reject`/`halt` breach fails the
+node. Pass the contract IR, or actually-fine's TypeScript `Contract`:
+
+```ts
+const clean = pipeline.contractGate("Orders contract", orders, { contract: ordersContract });
+```
+
+`bash` runs a trusted command as the worker's OS user (not a sandbox).
+Platform references such as `${param.day}` are refused inside `command`;
+pass them through `env` and quote the variable:
+
+```ts
+pipeline.bash("Refresh", clean, { command: './refresh.sh "$DAY"', env: { DAY: "${param.day}" } });
+```
+
+`migrate` takes the full option set (`keyColumns`, `sourceConnId`,
+`targetConnId`, `dialect`, `chunkSize`, `createTable`), and `partition`
+splits the copy into ranges copied in parallel, each retried on its own.
+A partitioned copy must be an upsert whose `keyColumns` include the
+partition column, into a table that already exists:
+
+```ts
+pipeline.migrate("Copy events", {
+  sourceConnId: "oltp", targetConnId: "dwh", query: "SELECT * FROM events", table: "events",
+  mode: "upsert", keyColumns: ["id"],
+  partition: { column: "id", strategy: "numeric", boundaries: [0, 1_000_000, 2_000_000], maxParallel: 4 },
+});
+```
+
+Every node that reads or writes data takes `retries`, `retryBackoff`,
+`retryDelay` (milliseconds), `timeout` (seconds) and `pool`, which puts
+it in a named concurrency pool on the server (without it, the pool of
+its `connId`). `dbt` takes `vars` as an object (sent as compact JSON
+with sorted keys, the string the server reads), `connId`,
+`targetSchema`, `outputModel` and an `input`.
+
 ## Operating
 
 ```ts
@@ -149,6 +199,24 @@ await client.deploy(pipeline); // capability preflight + create-or-update
 const run = await client.run("orders");
 console.log(await run.wait());
 ```
+
+`deploy` refuses, before saving anything, a node type the server does
+not know or has disabled (its `/api/capabilities` reports both).
+
+```ts
+await client.dryRun("orders");                                   // up to 10 rows per node; no run recorded
+const again = await run.resume({ fromNode: "load" });            // a NEW run; omit fromNode to restart at the failure
+await client.backfill("orders", { start: "2026-10-01", end: "2026-10-07" });
+```
+
+A dry run really executes the nodes, so a sink still writes. `backfill`
+takes bare dates as whole days (end inclusive), RFC3339 strings or
+`Date`s as instants, and `force: true` to re-run succeeded intervals or
+backfill a pipeline that never references its interval.
+
+On a multi-workspace server, `new Client(url, { workspace })`,
+`BROKOLI_WORKSPACE` or the CLI's `--workspace` sends `X-Workspace-ID` on
+every request; without it the server uses your default workspace.
 
 `Client.fromEnv` resolves credentials from `BROKOLI_TOKEN`, then from
 the credentials file shared with the Python SDK
@@ -179,7 +247,7 @@ without opening it.
 | `src/code.ts` | TypeScript function serialization and generated wrapper scripts |
 | `src/device.ts` | device authorization and polling |
 | `src/testing.ts` | graph assertions, run snapshots, watch, live harness |
-| `schema/pipeline-ir-2.1.json` | pinned canonical IR schema used before semantic validation |
+| `schema/pipeline-ir-2.2.json`, `schema/task-interface-v1.json` | canonical IR schemas copied from core v0.18.12, used before semantic validation; `bun run check:schema` fails if they differ from that commit and warns if core has moved on |
 
 `expectGraph(pipeline).hasEdge(from, to)` accepts any edge condition;
 pass `true` or `false` as the third argument to assert a specific branch.
@@ -213,8 +281,9 @@ in the Python SDK itself.
 
 `tests/integration/` exercises the client end to end against a live
 server: capabilities, deploy (create and update-in-place), run/wait,
-logs, node runs, cancel, retry/resume, interval-native backfill, and
-run-scoped node previews. The suite activates when `BROKOLI_SERVER` is
+logs, node runs, cancel, retry/resume, interval-native backfill,
+run-scoped node previews, dry runs, and a wait, contract gate and bash
+pipeline end to end. The suite activates when `BROKOLI_SERVER` is
 set and skips otherwise; its file-node fixtures assume the server
 shares the local filesystem (a dev/demo instance):
 

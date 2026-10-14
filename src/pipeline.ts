@@ -34,6 +34,82 @@ import type { BptdType, DatasetSchema, ParameterDeclaration, TaskInterface } fro
 import { buildTaskInterface } from "./schema";
 import type { Expression } from "./expression";
 
+/** The engine's generic per-node retry and timeout knobs. `retryDelay`
+ * is in milliseconds and `timeout` in seconds, as the editor labels them. */
+export type RetryOptions = {
+  retries?: number;
+  retryBackoff?: string;
+  retryDelay?: number;
+  timeout?: number;
+};
+
+/** `pool` puts a node in a named concurrency pool on the server; without
+ * it a node joins the pool of its `connId`. */
+export type PoolOption = { pool?: string };
+
+function retryConfig(options: RetryOptions): Config {
+  return {
+    max_retries: options.retries,
+    retry_backoff: options.retries === undefined ? undefined : options.retryBackoff || "exponential",
+    retry_delay: options.retryDelay,
+    timeout: options.timeout,
+  };
+}
+
+export type BashOptions = RetryOptions & PoolOption & {
+  command?: string;
+  workingDir?: string;
+  env?: Record<string, string>;
+  maxMemoryMb?: number;
+  maxCpuSeconds?: number;
+  nodeKey?: string;
+};
+
+/** A migrate partition: ranges of one column copied in parallel, each
+ * retried on its own. Dates are RFC3339 strings or Date objects. */
+export type MigratePartition = {
+  column: string;
+  strategy: "numeric" | "date";
+  boundaries: Array<number | string | Date>;
+  maxParallel?: number;
+};
+
+export type WaitCondition = "file_exists" | "http" | "interval_elapsed" | "pipeline";
+
+/** A wait duration: a Go duration string such as "90s" or "2h30m", or a
+ * number of seconds. */
+export type Duration = string | number;
+
+function goDuration(value: Duration | undefined): string | undefined {
+  if (value === undefined || typeof value === "string") return value;
+  return Number.isInteger(value) ? `${value}s` : `${Math.round(value * 1000)}ms`;
+}
+
+/** An actually-fine contract: its IR, or an object that produces it
+ * (actually-fine's TypeScript `Contract`). */
+export type ContractInput = Record<string, unknown> | { toIR(): unknown };
+
+function contractIR(contract: ContractInput | undefined): unknown {
+  if (contract && typeof (contract as { toIR?: unknown }).toIR === "function") {
+    return (contract as { toIR(): unknown }).toIR();
+  }
+  return contract === undefined ? undefined : structuredClone(contract);
+}
+
+/** JSON with object keys sorted at every level and no whitespace: the
+ * same string the Python SDK's json.dumps(sort_keys=True,
+ * separators=(",", ":")) produces for the same value. */
+function stableJSON(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJSON).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${stableJSON(child)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 /** Node id base: lowercase, [a-z0-9_] only, max 20 chars, "node" fallback
  * — must match the Python SDK's allocator for cross-SDK id parity. */
 // Mirrors the Python SDK's _make_id exactly: lowercase, spaces become
@@ -375,23 +451,28 @@ export class Pipeline {
 
   // ── Node factories ────────────────────────────────────────────────
 
-  sourceFile(name: string, options: { path?: string; format?: string; schema?: DatasetSchema; connId?: string | Connection; nodeKey?: string } = {}): DatasetRef {
-    return this.register("source_file", name, buildConfig({ path: options.path || "", format: options.format || "csv", schema: options.schema, conn_id: options.connId }), [], { nodeKey: options.nodeKey, kind: "dataset" });
+  sourceFile(name: string, options: RetryOptions & PoolOption & { path?: string; format?: string; schema?: DatasetSchema; connId?: string | Connection; nodeKey?: string } = {}): DatasetRef {
+    return this.register("source_file", name, buildConfig({
+      path: options.path || "",
+      format: options.format || "csv",
+      schema: options.schema,
+      conn_id: options.connId,
+      ...retryConfig(options),
+      pool: options.pool,
+    }), [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
   sourceDb(
     name: string,
-    options: { query?: string; connId?: string | Connection; uri?: string; retries?: number; retryBackoff?: string; retryDelay?: number; timeout?: number; schema?: DatasetSchema; nodeKey?: string } = {},
+    options: RetryOptions & PoolOption & { query?: string; connId?: string | Connection; uri?: string; schema?: DatasetSchema; nodeKey?: string } = {},
   ): DatasetRef {
     const config = buildConfig({
       query: options.query || "",
       conn_id: options.connId,
       uri: options.uri,
-      max_retries: options.retries,
-      retry_backoff: options.retries === undefined ? undefined : options.retryBackoff || "exponential",
-      retry_delay: options.retryDelay,
-      timeout: options.timeout,
+      ...retryConfig(options),
       schema: options.schema,
+      pool: options.pool,
     });
     // Parity anchor: the reference SDK annotates source schema hints,
     // and they survive normalization into the digest.
@@ -406,6 +487,9 @@ export class Pipeline {
       params?: Config; response?: "dataset" | "scalar" | "artifact"; records?: string; valuePath?: string;
       pagination?: Config | PaginationStrategy; profile?: Config; executionProfile?: Config; retries?: number; retryBackoff?: string; retryDelay?: number;
       timeout?: number; schema?: DatasetSchema; nodeKey?: string;
+      /** The fetcher: "rest" (default) or another the server registers. */
+      sourceType?: string;
+      pool?: string;
     } = {},
   ): NodeRef {
     const response = options.response || "dataset";
@@ -437,6 +521,8 @@ export class Pipeline {
       retry_delay: options.retryDelay,
       timeout: options.timeout,
       schema: options.schema,
+      source_type: options.sourceType,
+      pool: options.pool,
     });
     if (profile) {
       for (const [sourceKey, configKey] of [["timeout", "timeout"], ["max_retries", "max_retries"], ["retry_backoff", "retry_backoff"], ["retry_delay", "retry_delay"]] as const) {
@@ -518,20 +604,21 @@ export class Pipeline {
     return this.register("quality_check", name, options.rules?.length ? { rules: structuredClone(options.rules) } : {}, input ? [input] : [], { nodeKey: options.nodeKey });
   }
 
-  sinkFile(name: string, input?: NodeRef, options: { path?: string; format?: string; compress?: string; connId?: string | Connection; retries?: number; retryBackoff?: string; retryDelay?: number; timeout?: number; nodeKey?: string } = {}): NodeRef {
+  sinkFile(name: string, input?: NodeRef, options: RetryOptions & PoolOption & { path?: string; format?: string; compress?: string; connId?: string | Connection; nodeKey?: string } = {}): NodeRef {
     return this.register("sink_file", name, buildConfig({
       path: options.path || "",
       format: options.format || "csv",
       conn_id: options.connId,
       compress: options.compress,
-      max_retries: options.retries,
-      retry_backoff: options.retries === undefined ? undefined : options.retryBackoff || "exponential",
-      retry_delay: options.retryDelay,
-      timeout: options.timeout,
+      ...retryConfig(options),
+      pool: options.pool,
     }), input ? [input] : [], { nodeKey: options.nodeKey });
   }
 
-  sinkDb(name: string, input?: NodeRef, options: { table?: string; mode?: string; connId?: string; uri?: string; keyColumns?: string[]; truncate?: boolean; nodeKey?: string } = {}): NodeRef {
+  /** `createTable` creates the table from the input's columns when it
+   * does not exist; `tableEngine` sets the engine of a table created on
+   * ClickHouse ("MergeTree" when unset). */
+  sinkDb(name: string, input?: NodeRef, options: RetryOptions & PoolOption & { table?: string; mode?: string; connId?: string | Connection; uri?: string; keyColumns?: string[]; truncate?: boolean; createTable?: boolean; tableEngine?: string; nodeKey?: string } = {}): NodeRef {
     return this.register("sink_db", name, buildConfig({
       table: options.table || "",
       mode: options.mode || "append",
@@ -539,47 +626,107 @@ export class Pipeline {
       uri: options.uri,
       key_columns: options.keyColumns,
       truncate: options.truncate,
+      ...retryConfig(options),
+      create_table: options.createTable,
+      table_engine: options.tableEngine,
+      pool: options.pool,
     }), input ? [input] : [], { nodeKey: options.nodeKey });
   }
 
-  sinkApi(name: string, input?: NodeRef, options: { url?: string; method?: string; body?: unknown; headers?: Config; connId?: string; nodeKey?: string } = {}): NodeRef {
+  sinkApi(name: string, input?: NodeRef, options: RetryOptions & PoolOption & { url?: string; method?: string; body?: unknown; headers?: Config; connId?: string | Connection; nodeKey?: string } = {}): NodeRef {
     return this.register("sink_api", name, buildConfig({
       url: options.url || "",
       method: options.method || "POST",
       body_template: options.body,
       headers: options.headers,
       conn_id: options.connId,
+      ...retryConfig(options),
+      pool: options.pool,
     }), input ? [input] : [], { nodeKey: options.nodeKey });
   }
 
-  migrate(name: string, options: { sourceUri?: string; targetUri?: string; query?: string; table?: string; mode?: string; nodeKey?: string } = {}): DatasetRef {
-    return this.register("migrate", name, {
+  /**
+   * Copy rows from one database to another. `mode` "upsert" needs
+   * `keyColumns`. `partition` splits the copy into ranges of one column
+   * that run in parallel and retry independently; a partitioned copy must
+   * be an upsert whose `keyColumns` include the partition column, into a
+   * table that already exists.
+   */
+  migrate(name: string, options: RetryOptions & PoolOption & {
+    sourceUri?: string; targetUri?: string; query?: string; table?: string; mode?: string;
+    keyColumns?: string[]; sourceConnId?: string | Connection; targetConnId?: string | Connection;
+    dialect?: string; chunkSize?: number; createTable?: boolean; partition?: MigratePartition;
+    nodeKey?: string;
+  } = {}): DatasetRef {
+    const partition = options.partition && buildConfig({
+      column: options.partition.column,
+      strategy: options.partition.strategy,
+      boundaries: options.partition.boundaries.map((b) => (b instanceof Date ? b.toISOString() : b)),
+      max_parallel: options.partition.maxParallel,
+    });
+    return this.register("migrate", name, buildConfig({
       source_uri: options.sourceUri || "",
       dest_uri: options.targetUri || "",
       source_query: options.query || "",
       dest_table: options.table || "",
       mode: options.mode || "append",
-    }, [], { nodeKey: options.nodeKey, kind: "dataset" });
+      source_conn_id: options.sourceConnId,
+      dest_conn_id: options.targetConnId,
+      key_columns: options.keyColumns,
+      dialect: options.dialect,
+      chunk_size: options.chunkSize,
+      create_table: options.createTable,
+      ...retryConfig(options),
+      partition,
+      pool: options.pool,
+    }), [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
-  dbt(name: string, options: { command?: string; projectDir?: string; target?: string; select?: string; profilesDir?: string; vars?: Config; nodeKey?: string } = {}): DatasetRef {
+  /**
+   * Run dbt. `vars` goes to `--vars`: an object is sent as compact JSON
+   * with sorted keys (the server reads a string), a string as written.
+   * `connId` generates the dbt profile from a Brokoli connection
+   * (`profilesDir` still wins), `targetSchema` sets that profile's schema,
+   * and `outputModel` names the model whose table this node hands on.
+   */
+  dbt(name: string, options: RetryOptions & PoolOption & {
+    command?: string; projectDir?: string; target?: string; select?: string; profilesDir?: string;
+    vars?: Config | string; connId?: string | Connection; targetSchema?: string; outputModel?: string;
+    input?: NodeRef; nodeKey?: string;
+  } = {}): DatasetRef {
     return this.register("dbt", name, buildConfig({
       command: options.command || "run",
       project_dir: options.projectDir,
       target: options.target,
       select: options.select,
       profiles_dir: options.profilesDir,
-      vars: options.vars,
-    }), [], { nodeKey: options.nodeKey, kind: "dataset" });
+      vars: options.vars === undefined || typeof options.vars === "string" ? options.vars : stableJSON(wireValue(options.vars)),
+      conn_id: options.connId,
+      target_schema: options.targetSchema,
+      output_model: options.outputModel,
+      ...retryConfig(options),
+      pool: options.pool,
+    }), options.input ? [options.input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
-  notify(name: string, input?: NodeRef, options: { notifyType?: string; webhookUrl?: string; message?: string; channel?: string; nodeKey?: string } = {}): NodeRef {
+  notify(name: string, input?: NodeRef, options: RetryOptions & { notifyType?: string; webhookUrl?: string; message?: string; channel?: string; nodeKey?: string } = {}): NodeRef {
     return this.register("notify", name, buildConfig({
       notify_type: options.notifyType || "webhook",
       webhook_url: options.webhookUrl || "",
       message: options.message,
       channel: options.channel,
+      ...retryConfig(options),
     }), input ? [input] : [], { nodeKey: options.nodeKey });
+  }
+
+  /** Enforce an actually-fine data contract: cleared records flow on,
+   * quarantined ones are dropped, and a breach of a reject or halt rule
+   * fails the node after its evidence is recorded. */
+  contractGate(name: string, input: NodeRef | undefined, options: RetryOptions & { contract?: ContractInput; nodeKey?: string } = {}): DatasetRef {
+    return this.register("contract_gate", name, buildConfig({
+      contract: contractIR(options.contract),
+      ...retryConfig(options),
+    }), input ? [input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
   conditionNode(name: string, input: NodeRef | undefined, expression: string, nodeKey?: string): ConditionRef {
@@ -588,34 +735,56 @@ export class Pipeline {
 
   /** Deferrable wait (server v0.10.79+): parks the run, holding no
    * worker slot, until the declarative condition fires. */
+  /**
+   * Park the run until `condition` holds, without holding a concurrency
+   * slot. The server re-checks every `pollInterval` (default 30s) and
+   * fails the node after `timeout` (default 6h); `input`, if any, passes
+   * through. Durations are Go duration strings ("90s", "2h30m") or
+   * seconds.
+   */
   wait(
     name: string,
-    options: { condition?: "file_exists" | "http" | "interval_elapsed" | "pipeline"; path?: string; url?: string; expectStatus?: number; offset?: string; pipelineId?: string; pollInterval?: string; timeout?: string; nodeKey?: string } = {},
-  ): NodeRef {
+    options: {
+      condition?: WaitCondition; path?: string; url?: string; expectStatus?: number; offset?: Duration;
+      pipelineId?: string; pollInterval?: Duration; timeout?: Duration; input?: NodeRef; nodeKey?: string;
+    } = {},
+  ): DatasetRef {
     return this.register("wait", name, buildConfig({
-      condition: options.condition,
+      condition: options.condition || "",
       path: options.path,
       url: options.url,
       expect_status: options.expectStatus,
-      offset: options.offset,
+      offset: goDuration(options.offset),
       pipeline_id: options.pipelineId,
-      poll_interval: options.pollInterval,
-      timeout: options.timeout,
-    }), [], { nodeKey: options.nodeKey });
+      poll_interval: goDuration(options.pollInterval),
+      timeout: goDuration(options.timeout),
+    }), options.input ? [options.input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
-  code(name: string, input?: NodeRef, options: { language?: "python" | "typescript"; script?: string; helpers?: Helpers; pythonPath?: string; nodePath?: string; retries?: number; retryBackoff?: string; timeout?: number; maxMemoryMb?: number; maxCpuSeconds?: number; outputSchema?: DatasetSchema; nodeKey?: string } = {}): NodeRef {
+  code(name: string, input?: NodeRef, options: RetryOptions & PoolOption & { language?: "python" | "typescript"; script?: string; helpers?: Helpers; pythonPath?: string; nodePath?: string; maxMemoryMb?: number; maxCpuSeconds?: number; outputSchema?: DatasetSchema; nodeKey?: string } = {}): NodeRef {
     return this.register("code", name, buildConfig({
       language: options.language || "python",
       script: `${helpersPreamble(options.helpers)}${options.script || ""}`,
       python_path: options.pythonPath,
       node_path: options.nodePath,
-      max_retries: options.retries,
-      retry_backoff: options.retries === undefined ? undefined : options.retryBackoff || "exponential",
-      timeout: options.timeout,
+      ...retryConfig(options),
       max_memory_mb: options.maxMemoryMb,
       max_cpu_seconds: options.maxCpuSeconds,
       output_schema: options.outputSchema,
+      pool: options.pool,
+    }), input ? [input] : [], { nodeKey: options.nodeKey });
+  }
+
+  /** Run a trusted Bash command and pass the input dataset through unchanged. */
+  bash(name: string, input?: NodeRef, options: BashOptions = {}): NodeRef {
+    return this.register("bash", name, buildConfig({
+      command: options.command || "",
+      working_dir: options.workingDir,
+      env: options.env,
+      ...retryConfig(options),
+      max_memory_mb: options.maxMemoryMb,
+      max_cpu_seconds: options.maxCpuSeconds,
+      pool: options.pool,
     }), input ? [input] : [], { nodeKey: options.nodeKey });
   }
 
