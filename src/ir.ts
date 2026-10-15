@@ -91,6 +91,8 @@ export const NODE_TYPE_CAPABILITIES: Record<string, Capability[]> = {
   aggregate: ["compute", "dataset-output"],
   filter: ["compute", "dataset-output"],
   wait: ["compute", "dataset-output"],
+  bash: ["compute"],
+  contract_gate: ["compute"],
 };
 
 /** Fields the server assigns; normalization drops them (spec step 1). */

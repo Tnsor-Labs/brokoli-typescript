@@ -26,6 +26,26 @@ describe("device authorization", () => {
     expect(waits).toEqual([1000, 1000, 3000]);
   });
 
+  test("backs off on a rate-limited or unavailable poll and keeps polling (#29)", async () => {
+    const grant = { device_code: "d", user_code: "U", verification_uri: "http://s/c", interval: 1, expires_in: 600 };
+    const waits: number[] = [];
+    const result = await pollForToken("http://server", grant, {
+      fetch: sequence(
+        [429, { error: "too many authorization polls" }],
+        [503, {}],
+        [200, { status: "approved", token: "brk_429", username: "" }],
+      ),
+      sleep: async (milliseconds) => { waits.push(milliseconds); },
+    });
+    expect(result.token).toBe("brk_429");
+    expect(waits).toEqual([1000, 2000, 4000]);
+  });
+
+  test("other poll failures still fail", async () => {
+    const grant = { device_code: "d", user_code: "U", verification_uri: "http://s/c", interval: 1, expires_in: 600 };
+    await expect(pollForToken("http://server", grant, { fetch: sequence([500, {}]), sleep: async () => {} })).rejects.toThrow(/HTTP 500/);
+  });
+
   test("refuses servers without the grant", async () => {
     await expect(requestDeviceAuthorization("http://server", sequence([404, {}]))).rejects.toThrow(/does not support device authorization/);
   });

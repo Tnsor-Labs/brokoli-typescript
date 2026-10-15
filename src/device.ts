@@ -38,6 +38,11 @@ export async function requestDeviceAuthorization(server: string, fetcher = fetch
   return response.body as DeviceGrant;
 }
 
+// Answers that mean "not now" rather than "no": too many requests, and a
+// gateway or server that is briefly unavailable (#29).
+const POLL_BACK_OFF = new Set([429, 502, 503, 504]);
+const POLL_MAX_WAIT = 60;
+
 export async function pollForToken(
   server: string,
   grant: DeviceGrant,
@@ -48,8 +53,14 @@ export async function pollForToken(
   const deadline = Date.now() + Math.max(1, grant.expires_in ?? 600) * 1000;
   let wait = Math.max(1, grant.interval ?? 3);
   while (Date.now() <= deadline) {
-    await sleep(wait * 1000);
+    await sleep(Math.min(wait * 1000, Math.max(0, deadline - Date.now())));
     const response = await post(fetcher, server, "/api/auth/oauth/device/poll", { device_code: grant.device_code });
+    if (POLL_BACK_OFF.has(response.status)) {
+      // The code is still good until it expires: poll more slowly rather
+      // than abandoning a login the user may be approving right now.
+      wait = Math.min(wait * 2, POLL_MAX_WAIT);
+      continue;
+    }
     if (response.status !== 200) throw new APIError(`Device authorization poll failed: HTTP ${response.status}`, response.status, response.body);
     switch (String(response.body.status || "")) {
       case "authorization_pending": continue;

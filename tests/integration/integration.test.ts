@@ -256,4 +256,45 @@ live("live server integration", () => {
     expect(preview.columns).toContain("amount");
     expect(preview.rows.length).toBeGreaterThan(0);
   }, 30000);
+  test("wait, contract gate and bash run end to end", async () => {
+    const input = join(dir, "people.csv");
+    const output = join(dir, "people-clean.csv");
+    const marker = join(dir, "bash-marker.txt");
+    writeFileSync(input, "id,email\n1,ada@example.com\n2,not-an-email\n");
+    const pipeline = new Pipeline("TS core nodes", { pipelineId: pid("core-nodes") });
+    const source = pipeline.sourceFile("Read", { path: input });
+    const ready = pipeline.wait("Input landed", { input: source, condition: "file_exists", path: input, pollInterval: 1, timeout: 60 });
+    const clean = pipeline.contractGate("People contract", ready, {
+      contract: {
+        ir_version: "1.0",
+        contract: { id: "people", version: "1" },
+        input: { kind: "record-stream" },
+        rules: [{
+          id: "email-valid", kind: "record", path: "$.email",
+          predicate: { op: "format", format: "email" },
+          on_breach: { severity: "error", action: "quarantine" },
+        }],
+      },
+    });
+    const ran = pipeline.bash("Touch marker", clean, { command: 'printf "%s" "$GREETING" > "$MARKER"', env: { GREETING: "hello", MARKER: marker } });
+    pipeline.sinkFile("Write", ran, { path: output });
+    await deploy(pipeline);
+    const detail = await (await client.run(pid("core-nodes"))).wait({ timeout: 120 });
+    expect(detail.status).toBe("success");
+    expect(readFileSync(marker, "utf8")).toBe("hello");
+    const written = readFileSync(output, "utf8");
+    expect(written).toContain("ada@example.com");
+    expect(written).not.toContain("not-an-email");
+  }, 120000);
+
+  test("dry run returns node results", async () => {
+    const input = join(dir, "dry.csv");
+    writeFileSync(input, "id\n1\n");
+    const pipeline = new Pipeline("TS dry run", { pipelineId: pid("dry") });
+    pipeline.transform("Shape", pipeline.sourceFile("Read", { path: input }), { rules: [{ type: "rename", mapping: { id: "key" } }] });
+    await deploy(pipeline);
+    const result = await client.dryRun(pid("dry"));
+    expect(result.error).toBeUndefined();
+    expect(result.results).toBeTruthy();
+  }, 60000);
 });

@@ -17,6 +17,11 @@ export const TERMINAL_RUN_STATUSES = new Set(["success", "succeeded", "failed", 
 export type Capabilities = {
   supportedIrVersions: string[];
   supportedExecutionFeatures?: string[];
+  /** Node types the server knows (its node_type_capabilities keys), when
+   * it reports them. */
+  nodeTypes?: string[];
+  /** Node types the server's operator disabled. */
+  disabledNodeTypes?: string[];
   codeLanguages?: string[];
   codeJsWrapperVersion?: number;
   raw: Record<string, unknown>;
@@ -27,7 +32,22 @@ export type ClientOptions = {
   username?: string;
   password?: string;
   fetch?: typeof globalThis.fetch;
+  /** Sent as X-Workspace-ID on every request, for a multi-workspace
+   * server; without it the server uses your default workspace. */
+  workspace?: string;
 };
+
+// The server lists every node type in node_type_capabilities except
+// "task", which its execution features gate instead.
+const UNLISTED_NODE_TYPES = new Set(["task"]);
+
+/** The backfill request field and text for one bound: a bare date is a
+ * whole day (end inclusive) in the legacy *_date field; an instant is an
+ * RFC3339 start/end. */
+function backfillBound(key: "start" | "end", value: string | Date): [string, string] {
+  if (value instanceof Date) return [key, value.toISOString()];
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? [`${key}_date`, value] : [key, value];
+}
 
 export class Run {
   constructor(
@@ -64,6 +84,19 @@ export class Run {
     return this.client.request(
       `/api/runs/${encodeURIComponent(this.id)}/nodes/${encodeURIComponent(nodeId)}/preview`,
     );
+  }
+
+  /** Run this run again from where it stopped, as a new run: from the
+   * first failed node, or from `fromNode` onward. The other node outputs
+   * are reused. Returns the new run's handle. */
+  async resume(options: { fromNode?: string } = {}): Promise<Run> {
+    const response = await this.client.request(`/api/runs/${encodeURIComponent(this.id)}/resume`, {
+      method: "POST",
+      body: JSON.stringify(options.fromNode ? { from_node: options.fromNode } : {}),
+    });
+    const id = response?.run_id || response?.id || response?.run?.id;
+    if (!id) throw new APIError("Resume response did not contain a run ID", 0, response);
+    return new Run(this.client, id);
   }
 
   cancel(): Promise<unknown> {
@@ -133,7 +166,8 @@ export class Client {
     const target = (server || process.env.BROKOLI_SERVER || "").replace(/\/$/, "");
     if (!target) throw new TypeError("no server: pass one or set BROKOLI_SERVER");
     const token = process.env.BROKOLI_TOKEN || (await loadToken(target));
-    return new Client(target, token ? { ...options, apiKey: token } : options);
+    const workspace = options.workspace ?? process.env.BROKOLI_WORKSPACE;
+    return new Client(target, { ...options, ...(token ? { apiKey: token } : {}), ...(workspace ? { workspace } : {}) });
   }
 
   private async authenticate(): Promise<void> {
@@ -159,6 +193,7 @@ export class Client {
     headers.set("accept", "application/json");
     if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
+    if (this.options.workspace) headers.set("x-workspace-id", this.options.workspace);
     const response = await this.doFetch(`${this.baseUrl.replace(/\/$/, "")}${path}`, { ...init, headers });
     if (response.status === 401 && retry && !this.options.apiKey && this.options.username) {
       this.token = undefined;
@@ -183,9 +218,20 @@ export class Client {
     if (raw.supported_execution_features !== undefined && raw.supported_execution_features !== null && !Array.isArray(raw.supported_execution_features)) {
       throw new APIError("Malformed server capabilities", 200, raw);
     }
+    const nodeTypeCapabilities = raw.node_type_capabilities;
+    if (nodeTypeCapabilities !== undefined && nodeTypeCapabilities !== null && (typeof nodeTypeCapabilities !== "object" || Array.isArray(nodeTypeCapabilities))) {
+      throw new APIError("Malformed server capabilities", 200, raw);
+    }
+    // A server that disables nothing may send null rather than [].
+    const disabled = raw.disabled_node_types;
+    if (disabled !== undefined && disabled !== null && (!Array.isArray(disabled) || disabled.some((t: unknown) => typeof t !== "string" || !t))) {
+      throw new APIError("Malformed server capabilities", 200, raw);
+    }
     return {
       supportedIrVersions: raw.supported_ir_versions,
       supportedExecutionFeatures: raw.supported_execution_features ?? undefined,
+      nodeTypes: nodeTypeCapabilities ? Object.keys(nodeTypeCapabilities) : undefined,
+      disabledNodeTypes: nodeTypeCapabilities || disabled ? disabled ?? [] : undefined,
       codeLanguages: raw.code_languages,
       codeJsWrapperVersion: raw.code_js_wrapper_version,
       raw,
@@ -209,6 +255,17 @@ export class Client {
         caps.raw,
       );
     }
+    // A node type the server predates, or one its operator disabled, would
+    // be refused by its validator; say so before anything is saved.
+    const problems: string[] = [];
+    for (const type of [...new Set(ir.nodes.map((node) => node.type))].sort()) {
+      if (caps.disabledNodeTypes?.includes(type)) problems.push(`${type} nodes are disabled on this server`);
+      else if (caps.nodeTypes && !caps.nodeTypes.includes(type) && !UNLISTED_NODE_TYPES.has(type)) {
+        problems.push(`this server does not know the ${type} node type; upgrade the server`);
+      }
+    }
+    if (problems.length) throw new APIError(`Pipeline cannot run on this server: ${problems.join("; ")}`, 409, caps.raw);
+
     const required = requiredExecutionFeatures(ir);
     if (caps.supportedExecutionFeatures) {
       const missing = required.filter(
@@ -305,29 +362,40 @@ export class Client {
 
   /** Resume a failed run. The server creates a NEW run that reuses the
    * old run's successful node outcomes; the returned handle points at
-   * that new run — the old one stays failed. */
-  async retry(runId: string): Promise<Run> {
-    const response = await this.request(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+   * that new run — the old one stays failed. `fromNode` re-runs that
+   * node and everything downstream of it instead. */
+  resume(runId: string, options: { fromNode?: string } = {}): Promise<Run> {
+    return new Run(this, runId).resume(options);
+  }
+
+  /** The same as `resume`; kept for existing callers. */
+  retry(runId: string, options: { fromNode?: string } = {}): Promise<Run> {
+    return this.resume(runId, options);
+  }
+
+  /** Execute the pipeline on up to 10 rows per node without recording a
+   * run. It really runs the nodes against their connections: a sink still
+   * writes. Returns `{results}`, plus `error` when a node failed. */
+  async dryRun(identifier: string): Promise<{ results: unknown; error?: string }> {
+    const pipeline = await this.pipeline(identifier);
+    return this.request(`/api/pipelines/${encodeURIComponent(pipeline.id)}/dry-run`, {
       method: "POST",
       body: JSON.stringify({}),
     });
-    const id = response?.run_id || response?.id || response?.run?.id;
-    if (!id) throw new APIError("Resume response did not contain a run ID", 0, response);
-    return new Run(this, id);
   }
 
   /**
    * Backfill over the pipeline's own schedule. Bounds route by shape:
    * bare YYYY-MM-DD keeps its historical inclusive-day meaning through
-   * the legacy fields; RFC3339 timestamps use the interval-native
-   * start/end (server v0.10.78+).
+   * the legacy fields; RFC3339 timestamps and Dates use the
+   * interval-native start/end (server v0.10.78+). `force` re-runs
+   * intervals that already succeeded, and lets a pipeline that never
+   * references its interval be backfilled anyway.
    */
-  async backfill(identifier: string, range: { start: string; end: string }): Promise<unknown> {
+  async backfill(identifier: string, range: { start: string | Date; end: string | Date; force?: boolean }): Promise<unknown> {
     const pipeline = await this.pipeline(identifier);
-    const bareDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
-    const body: Record<string, string> = {};
-    body[bareDate(range.start) ? "start_date" : "start"] = range.start;
-    body[bareDate(range.end) ? "end_date" : "end"] = range.end;
+    const body: Record<string, unknown> = Object.fromEntries([backfillBound("start", range.start), backfillBound("end", range.end)]);
+    if (range.force) body.force = true;
     return this.request(`/api/pipelines/${encodeURIComponent(pipeline.id)}/backfill`, {
       method: "POST",
       body: JSON.stringify(body),

@@ -5,6 +5,49 @@ import pipelineSchema from "../schema/pipeline-ir-2.2.json";
 import taskInterfaceSchema from "../schema/task-interface-v1.json";
 import type { Pipeline } from "./pipeline";
 
+const platformReference = /\$\{(interval|env|param|secret|var|run)\.[^}]*\}/;
+const paramReference = /\$\{param\.[^}]*\}/;
+const bashEnvName = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// A Go time.ParseDuration string, which is what the server parses wait
+// durations with.
+const goDuration = /^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)(ns|us|\u00b5s|ms|s|m|h)(([0-9]+(\.[0-9]*)?|\.[0-9]+)(ns|us|\u00b5s|ms|s|m|h))*$/;
+const waitRequires: Record<string, string> = { file_exists: "path", http: "url", pipeline: "pipeline_id" };
+const partitionColumn = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const contractIrKeys = ["ir_version", "contract", "input", "rules"];
+
+function isPositiveNumber(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+/** Why a migrate partition spec is one the server refuses, or "" if it is
+ * not. Mirrors the server's parseMigratePartitionConfig. */
+function partitionError(partition: unknown): string {
+  if (!partition || typeof partition !== "object" || Array.isArray(partition)) return "partition must be an object";
+  const p = partition as Record<string, unknown>;
+  if (typeof p.column !== "string" || !partitionColumn.test(p.column)) return "partition.column must be a simple SQL identifier";
+  const strategy = String(p.strategy ?? "").trim().toLowerCase();
+  if (strategy !== "numeric" && strategy !== "date") return "partition.strategy must be numeric or date";
+  const boundaries = p.boundaries;
+  if (!Array.isArray(boundaries) || boundaries.length < 2) return "partition.boundaries must contain at least two values";
+  const keys: number[] = [];
+  for (const [i, boundary] of boundaries.entries()) {
+    if (strategy === "numeric") {
+      if (typeof boundary !== "number" || !Number.isFinite(boundary)) return `partition.boundaries[${i}] must be a finite number`;
+      keys.push(boundary);
+    } else {
+      const parsed = typeof boundary === "string" && /T/.test(boundary) && /(Z|[+-]\d{2}:\d{2})$/.test(boundary) ? Date.parse(boundary) : NaN;
+      if (Number.isNaN(parsed)) return `partition.boundaries[${i}] must be an RFC3339 timestamp string`;
+      keys.push(parsed);
+    }
+  }
+  if (keys.some((key, i) => i > 0 && keys[i - 1] >= key)) return "partition.boundaries must be strictly increasing";
+  if ("max_parallel" in p) {
+    const max = p.max_parallel;
+    if (typeof max !== "number" || !Number.isInteger(max) || max < 1 || max > 64) return "partition.max_parallel must be between 1 and 64";
+  }
+  return "";
+}
+
 // pipeline-ir-2.2.json's "interface"/"parameters" fields $ref into
 // task-interface-v1.json by its own declared absolute $id -- register
 // it first so Ajv can resolve that relative "task-interface-v1.json#/..."
@@ -114,15 +157,108 @@ export function validatePipeline(pipeline: Pipeline): ValidationResult {
       case "join":
         if (indegree.get(node.id) !== 2) error(node.name, "inputs", `join requires exactly 2 inputs, got ${indegree.get(node.id)}`);
         break;
-      case "wait":
-        if (!c.condition) error(node.name, "condition", "Wait requires a condition (file_exists, http, interval_elapsed, pipeline)");
+      case "wait": {
+        // Mirrors the server's parseWaitCondition (engine/wait.go).
+        const condition = String(c.condition || "");
+        if (!condition) {
+          error(node.name, "condition", "Wait requires a condition (file_exists, http, interval_elapsed, pipeline)");
+          break;
+        }
+        if (!(condition in waitRequires) && condition !== "interval_elapsed") {
+          error(node.name, "condition", `Unknown wait condition ${JSON.stringify(condition)} (known: file_exists, http, interval_elapsed, pipeline)`);
+          break;
+        }
+        const required = waitRequires[condition];
+        if (required && !c[required]) error(node.name, required, `Wait condition ${condition} needs a ${required}`);
+        for (const key of ["poll_interval", "timeout", "offset"]) {
+          const value = c[key];
+          if (value === undefined || value === "") continue;
+          if (typeof value !== "string" || !goDuration.test(value)) {
+            error(node.name, key, `Wait ${key} ${JSON.stringify(value)} is not a duration such as '30s' or '2h'`);
+          } else if (key !== "offset" && (value.startsWith("-") || !/[1-9]/.test(value))) {
+            error(node.name, key, `Wait ${key} ${JSON.stringify(value)} must be a positive duration`);
+          }
+        }
         break;
-      case "code":
+      }
+      case "contract_gate": {
+        const contract = c.contract;
+        if (contract === undefined) {
+          error(node.name, "contract", "contract_gate requires a 'contract'");
+        } else if (!contract || typeof contract !== "object" || Array.isArray(contract)) {
+          error(node.name, "contract", "contract_gate 'contract' must be an actually-fine contract: its IR as an object, or a Contract");
+        } else {
+          const missing = contractIrKeys.filter((key) => !(key in (contract as Record<string, unknown>)));
+          if (missing.length) error(node.name, "contract", `contract_gate contract is missing ${missing.join(", ")}`);
+        }
+        break;
+      }
+      case "migrate": {
+        const hasUris = c.source_uri && c.dest_uri;
+        const hasConns = c.source_conn_id && c.dest_conn_id;
+        if (!hasUris && !hasConns) error(node.name, "conn", "Migrate requires sourceUri + targetUri or sourceConnId + targetConnId");
+        if (c.mode === "upsert" && !(Array.isArray(c.key_columns) && c.key_columns.length)) {
+          error(node.name, "key_columns", "Migrate mode 'upsert' requires keyColumns");
+        }
+        if ("partition" in c) {
+          // Mirrors the partitioned-migrate rules in the server's validator.
+          const problem = partitionError(c.partition);
+          if (problem) {
+            error(node.name, "partition", problem);
+            break;
+          }
+          const column = String((c.partition as Record<string, unknown>).column).toLowerCase();
+          const keys = Array.isArray(c.key_columns) ? c.key_columns.map((k) => String(k).toLowerCase()) : [];
+          if (String(c.mode || "").toLowerCase() !== "upsert") error(node.name, "mode", "Partitioned migrate requires mode 'upsert'");
+          if (!keys.length) error(node.name, "key_columns", "Partitioned migrate requires keyColumns");
+          else if (!keys.includes(column)) error(node.name, "key_columns", `partition.column ${JSON.stringify(column)} must be included in keyColumns`);
+          if (c.create_table === true) error(node.name, "create_table", "Partitioned migrate requires createTable false");
+        }
+        break;
+      }
+      case "code": {
         if (!c.script) error(node.name, "script", "Code node requires a script");
         if (c.language !== undefined && c.language !== "python" && c.language !== "typescript") {
           error(node.name, "language", "Code language must be python or typescript");
         }
+        const reference = typeof c.script === "string" ? c.script.match(paramReference)?.[0] : undefined;
+        if (reference) {
+          // Mirrors the server's codeScriptParamError (core v0.15.0).
+          error(node.name, "script", `Code script contains ${reference}, which the server does not substitute in code: whoever starts the run would choose the code. Read params instead`);
+        }
+        for (const key of ["max_memory_mb", "max_cpu_seconds"]) {
+          if (c[key] !== undefined && !isPositiveNumber(c[key])) error(node.name, key, `Code '${key}' must be a positive number`);
+        }
         break;
+      }
+      case "bash": {
+        if (typeof c.command !== "string" || !c.command.trim()) {
+          error(node.name, "command", "Bash node requires a non-empty 'command'");
+        } else {
+          const reference = c.command.match(platformReference)?.[0];
+          if (reference) error(node.name, "command", `Bash command contains ${reference}, which must be passed through 'env' instead of shell source`);
+        }
+        if (c.working_dir !== undefined && typeof c.working_dir !== "string") {
+          error(node.name, "working_dir", "Bash 'working_dir' must be a string");
+        }
+        if (c.env !== undefined) {
+          if (c.env === null || typeof c.env !== "object" || Array.isArray(c.env)) {
+            error(node.name, "env", "Bash 'env' must be an object of string values");
+          } else {
+            for (const [key, value] of Object.entries(c.env as Record<string, unknown>)) {
+              if (!bashEnvName.test(key)) {
+                error(node.name, "env", `Bash environment name ${JSON.stringify(key)} is not a valid shell variable name`);
+                break;
+              }
+              if (typeof value !== "string" || value.includes("\0")) {
+                error(node.name, "env", "Bash 'env' values must be strings without NUL bytes");
+                break;
+              }
+            }
+          }
+        }
+        break;
+      }
     }
   }
 

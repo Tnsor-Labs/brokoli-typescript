@@ -52,7 +52,20 @@ export {
   Pipeline,
   ScalarRef,
 } from "./pipeline";
-export type { Hook, HookInput, MapOptions, PipelineOptions, TaskOptions } from "./pipeline";
+export type {
+  BashOptions,
+  ContractInput,
+  Duration,
+  Hook,
+  HookInput,
+  MapOptions,
+  MigratePartition,
+  PipelineOptions,
+  PoolOption,
+  RetryOptions,
+  TaskOptions,
+  WaitCondition,
+} from "./pipeline";
 export { pipe } from "./pipe";
 export { bool, maybe, num, str } from "./cast";
 export { Connection, EnvVar, InterpolationRef, Param, ResourceRef, Secret, Variable } from "./resources";

@@ -17,6 +17,40 @@ describe("Brokoli TypeScript compiler", () => {
     const gate = p.conditionNode("Gate", source, "row_count > 0"); const yes = p.sinkFile("Yes", undefined, { path: "yes.csv" }); const no = p.sinkFile("No", undefined, { path: "no.csv" });
     gate.when(yes); gate.otherwise(no); expect(p.toJSON().ir_version).toBe("2.1"); expect(p.toJSON().edges.at(-1)).toEqual({ from: "gate_1", to: "no_1", condition: false });
   });
+  test("serializes bash nodes with an explicit security boundary", () => {
+    const p = new Pipeline("Bash");
+    const source = p.sourceFile("Input", { path: "/data/in.csv" });
+    const node = p.bash("Refresh", source, {
+      command: './refresh.sh --since "$SINCE"',
+      workingDir: "/data/jobs",
+      env: { SINCE: "${param.since}" },
+      timeout: 600,
+      retries: 2,
+      retryDelay: 30000,
+      maxMemoryMb: 512,
+      maxCpuSeconds: 300,
+      nodeKey: "refresh-export",
+    });
+    expect(p.toJSON().nodes.find((candidate) => candidate.id === node.nodeId)).toMatchObject({
+      type: "bash",
+      capabilities: ["compute"],
+      config: {
+        command: './refresh.sh --since "$SINCE"', working_dir: "/data/jobs",
+        env: { SINCE: "${param.since}" }, timeout: 600, max_retries: 2,
+        retry_backoff: "exponential", retry_delay: 30000, max_memory_mb: 512,
+        max_cpu_seconds: 300,
+      },
+    });
+    expect(p.toJSON().edges).toContainEqual({ from: source.nodeId, to: node.nodeId });
+  });
+  test("rejects unsafe bash configuration locally", () => {
+    const p = new Pipeline("Bash validation");
+    p.bash("Bad", undefined, { command: "echo ${param.value}" });
+    expect(validatePipeline(p).errors).toContainEqual(expect.objectContaining({ field: "command" }));
+    const invalidEnv = new Pipeline("Bad environment");
+    invalidEnv.bash("Bad", undefined, { command: "true", env: { "NOT-VALID": "x" } as Record<string, string> });
+    expect(validatePipeline(invalidEnv).errors).toContainEqual(expect.objectContaining({ field: "env" }));
+  });
   test("refuses branch targets that already have inputs (the then() chain footgun)", () => {
     // Mirrors brokoli-sdk#81: then() returns its target, so
     // when(a.then(b)) would route the branch to b and orphan a.

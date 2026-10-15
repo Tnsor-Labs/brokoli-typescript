@@ -26,7 +26,7 @@ function flag(name: string, fallback = ""): string {
 }
 
 function usage(): void {
-  console.error("Usage: brokoli compile|validate|deploy|diff|run|status|logs|cancel|retry|backfill|auth ...");
+  console.error("Usage: brokoli compile|validate|deploy|diff|run|status|logs|cancel|retry|backfill|dry-run|auth ... [--workspace ID]");
 }
 
 if (!command) {
@@ -36,9 +36,11 @@ if (!command) {
 
 const server = flag("--server", process.env.BROKOLI_SERVER || "http://localhost:8080");
 const apiKey = flag("--api-key", process.env.BROKOLI_TOKEN);
+// --workspace beats BROKOLI_WORKSPACE; sent as X-Workspace-ID.
+const workspace = flag("--workspace", process.env.BROKOLI_WORKSPACE) || undefined;
 
 async function client(): Promise<Client> {
-  return apiKey ? new Client(server, { apiKey }) : Client.fromEnv(server);
+  return apiKey ? new Client(server, { apiKey, workspace }) : Client.fromEnv(server, { workspace });
 }
 
 async function readIR(file: string): Promise<PipelineIR> {
@@ -100,13 +102,18 @@ try {
   } else if (command === "cancel") {
     console.log(JSON.stringify(await (await client()).runHandle(argv[0]).cancel(), null, 2));
   } else if (command === "retry") {
-    // retry() returns a handle for the NEW run the server created.
-    console.log((await (await client()).retry(argv[0])).id);
+    // resume() returns a handle for the NEW run the server created.
+    const fromNode = flag("--from-node") || undefined;
+    console.log((await (await client()).resume(argv[0], { fromNode })).id);
   } else if (command === "backfill") {
     const start = flag("--start");
     const end = flag("--end");
+    const force = argv.includes("--force");
+    if (force) argv.splice(argv.indexOf("--force"), 1);
     if (!start || !end) throw new Error("backfill requires --start and --end");
-    console.log(JSON.stringify(await (await client()).backfill(argv[0], { start, end }), null, 2));
+    console.log(JSON.stringify(await (await client()).backfill(argv[0], { start, end, force }), null, 2));
+  } else if (command === "dry-run") {
+    console.log(JSON.stringify(await (await client()).dryRun(argv[0]), null, 2));
   } else {
     usage();
     process.exit(2);
