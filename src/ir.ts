@@ -103,21 +103,65 @@ const EMPTY_LIST_DEFAULTS = ["nodes", "edges", "tags", "depends_on", "dependency
 const EMPTY_MAP_DEFAULTS = ["params", "hooks"] as const;
 
 /** Unicode code-point comparison. The spec explicitly forbids
- * locale-sensitive comparison: a Turkish locale must not change digests. */
-function codePointCompare(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+ * locale-sensitive comparison: a Turkish locale must not change digests.
+ * Not `<`, which compares UTF-16 code units and so puts a character above
+ * U+FFFF (a surrogate pair, from U+D800) before one in U+E000..U+FFFF,
+ * where Python's code-point order puts it after. */
+export function codePointCompare(a: string, b: string): number {
+  const x = a[Symbol.iterator]();
+  const y = b[Symbol.iterator]();
+  for (;;) {
+    const p = x.next();
+    const q = y.next();
+    if (p.done || q.done) return p.done && q.done ? 0 : p.done ? -1 : 1;
+    const cp = p.value.codePointAt(0) as number;
+    const cq = q.value.codePointAt(0) as number;
+    if (cp !== cq) return cp < cq ? -1 : 1;
+  }
 }
 
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => codePointCompare(a, b))
-        .map(([key, child]) => [key, sortKeysDeep(child)]),
-    );
+const INDENT = "  ";
+
+/** One value as canonical JSON at the given depth. Written by hand rather
+ * than through JSON.stringify of a key-sorted object, because a JavaScript
+ * object puts integer-like keys ("9", "10") first in numeric order whatever
+ * order they were inserted in, so the sorted order never reached the
+ * output. Numbers use JSON.stringify's own Number-to-string, which is the
+ * RFC 8785 rule the spec requires; NaN and the infinities are refused
+ * rather than written as null. */
+function render(value: unknown, level: number): string | undefined {
+  if (value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") {
+    value = (value as { toJSON: () => unknown }).toJSON();
   }
-  return value;
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "boolean":
+    case "string":
+      return JSON.stringify(value);
+    case "number":
+      if (!Number.isFinite(value)) throw new RangeError(`Out of range float values are not JSON compliant: ${value}`);
+      return JSON.stringify(value);
+    case "undefined":
+    case "function":
+    case "symbol":
+      return undefined;
+    case "bigint":
+      throw new TypeError("Do not know how to serialize a BigInt");
+  }
+  const inner = INDENT.repeat(level + 1);
+  const close = INDENT.repeat(level);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    const items = value.map((item) => inner + (render(item, level + 1) ?? "null"));
+    return `[\n${items.join(",\n")}\n${close}]`;
+  }
+  const entries: string[] = [];
+  for (const [key, child] of Object.entries(value as Record<string, unknown>).sort(([a], [b]) => codePointCompare(a, b))) {
+    const rendered = render(child, level + 1);
+    if (rendered !== undefined) entries.push(`${inner}${JSON.stringify(key)}: ${rendered}`);
+  }
+  if (entries.length === 0) return "{}";
+  return `{\n${entries.join(",\n")}\n${close}}`;
 }
 
 /** Normalize IR per the spec: drop server fields, fill defaults, drop
@@ -156,11 +200,14 @@ export function normalizeIR(input: PipelineIR): PipelineIR {
   return ir;
 }
 
-/** Canonical JSON: keys sorted by code point, two-space indent, literal
- * UTF-8, one trailing newline. Byte-compatible with Python's
- * json.dumps(indent=2, sort_keys=True, ensure_ascii=False) + "\n". */
+/** Canonical JSON (IR canonicalization spec, section 2): keys sorted by
+ * code point, two-space indent, literal UTF-8, numbers by RFC 8785, one
+ * trailing newline. Byte-identical with the Python SDK's canonical_json,
+ * checked against core's shared rendering vectors. */
 export function canonicalJSON(value: unknown): string {
-  return `${JSON.stringify(sortKeysDeep(value), null, 2)}\n`;
+  const rendered = render(value, 0);
+  if (rendered === undefined) throw new TypeError("canonicalJSON: the value has no JSON form");
+  return `${rendered}\n`;
 }
 
 /** Normalize then render canonically. */
