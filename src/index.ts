@@ -60,6 +60,7 @@ export type {
   HookInput,
   MapOptions,
   MigratePartition,
+  NodeMap,
   PipelineOptions,
   PoolOption,
   RetryOptions,

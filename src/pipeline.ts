@@ -204,8 +204,85 @@ export type TaskOptions = {
    * must declare it identically, or Pipeline throws naming the
    * conflict. */
   parameters?: Record<string, ParameterDeclaration>;
+  /** Run the task once per item of an upstream collection (ADR-050):
+   * each run's `rows` holds that one row. See `NodeMap`. */
+  map?: NodeMap;
 };
 export type MapOptions = { columns?: string[]; nodeKey?: string; helpers?: Helpers };
+
+/** ADR-050: run a node once per item of an upstream collection, instead
+ * of once over its whole input. The `map` option of `code()`,
+ * `sourceDb()`, `sourceApi()` and `task()`, compiled to the node's `map`
+ * block. Not to be confused with `pipeline.map(fn)`, which applies a
+ * function to each row inside one node: this runs the whole node once per
+ * row, each row its own instance with its own status.
+ *
+ * The server sets the defaults and ceilings of `maxItems` and
+ * `maxParallel`, and refuses at save what it cannot honour. */
+export type NodeMap = {
+  /** The node whose output rows are the items, or a record of name to
+   * node to zip several collections item by item (each item is that
+   * position's row from each, merged). */
+  over: NodeRef | Record<string, NodeRef>;
+  /** The item column whose value identifies the item. Values must be
+   * present and unique. Without it, items are identified by position. */
+  key?: string;
+  /** The most items the node may fan out into; more fail the node. */
+  maxItems?: number;
+  /** How many items run at once. */
+  maxParallel?: number;
+  /** "fail" (default) stops at the first failed item, "continue" runs
+   * every item and then fails if any did, "skip" leaves failed items out. */
+  onItemFailure?: "fail" | "continue" | "skip";
+};
+
+const ON_ITEM_FAILURE = ["fail", "continue", "skip"];
+
+function positiveInt(name: string, value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new PipelineError(`map.${name} must be a whole number of at least 1, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+/** The IR `map` block for `spec`, and the upstream nodes that need an
+ * edge to the mapped node (the server requires one from each). Checked
+ * before the node is registered, so a bad spec leaves nothing behind. */
+function mapBlock(spec: NodeMap): { block: Config; refs: NodeRef[] } {
+  if (!spec || typeof spec !== "object") throw new PipelineError("map must be an object with over");
+  let over: string | Record<string, string>;
+  let refs: NodeRef[];
+  if (spec.over instanceof NodeRef) {
+    over = spec.over.nodeId;
+    refs = [spec.over];
+  } else if (spec.over && typeof spec.over === "object") {
+    const entries = Object.entries(spec.over);
+    if (!entries.length) throw new PipelineError("map.over needs at least one collection");
+    for (const [name, ref] of entries) {
+      if (!name) throw new PipelineError("map.over collection names must be non-empty");
+      if (!(ref instanceof NodeRef)) throw new PipelineError(`map.over.${name} must be an upstream node`);
+    }
+    over = Object.fromEntries(entries.map(([name, ref]) => [name, ref.nodeId]));
+    refs = entries.map(([, ref]) => ref);
+  } else {
+    throw new PipelineError("map.over must be an upstream node or a record of name to node");
+  }
+  if (spec.key !== undefined && (typeof spec.key !== "string" || !spec.key.trim())) {
+    throw new PipelineError(`map.key must be a column name, got ${JSON.stringify(spec.key)}`);
+  }
+  if (spec.onItemFailure !== undefined && !ON_ITEM_FAILURE.includes(spec.onItemFailure)) {
+    throw new PipelineError(`map.onItemFailure must be one of ${ON_ITEM_FAILURE.join(", ")}, got ${JSON.stringify(spec.onItemFailure)}`);
+  }
+  const block: Config = { over };
+  if (spec.key !== undefined) block.key = spec.key;
+  const maxItems = positiveInt("maxItems", spec.maxItems);
+  if (maxItems !== undefined) block.max_items = maxItems;
+  const maxParallel = positiveInt("maxParallel", spec.maxParallel);
+  if (maxParallel !== undefined) block.max_parallel = maxParallel;
+  if (spec.onItemFailure !== undefined) block.on_item_failure = spec.onItemFailure;
+  return { block, refs };
+}
 
 export class NodeRef {
   constructor(
@@ -398,9 +475,17 @@ export class Pipeline {
     name: string,
     config: Config,
     inputs: NodeRef[],
-    options: { nodeKey?: string; kind?: string; capabilities?: Capability[]; taskInterface?: TaskInterface } = {},
+    options: { nodeKey?: string; kind?: string; capabilities?: Capability[]; taskInterface?: TaskInterface; map?: NodeMap } = {},
   ): T {
     for (const input of inputs) this.assertOwn(input);
+    let mapRefs: NodeRef[] = [];
+    if (options.map !== undefined) {
+      if (config.expansion !== undefined) throw new PipelineError("A node may have map or expansion, not both");
+      const { block, refs } = mapBlock(options.map);
+      for (const ref of refs) this.assertOwn(ref);
+      config = { ...config, map: block };
+      mapRefs = refs;
+    }
     const id = this.allocateId(name, options.nodeKey);
     this.nodes.push({
       id,
@@ -413,6 +498,7 @@ export class Pipeline {
     const Ref = REF_KINDS[options.kind || "node"] || NodeRef;
     const ref = new Ref(id, this, options.kind || "node") as T;
     for (const input of inputs) this.edge(input, ref);
+    for (const from of mapRefs) this.edge(from, ref);
     return ref;
   }
 
@@ -464,7 +550,7 @@ export class Pipeline {
 
   sourceDb(
     name: string,
-    options: RetryOptions & PoolOption & { query?: string; connId?: string | Connection; uri?: string; schema?: DatasetSchema; nodeKey?: string } = {},
+    options: RetryOptions & PoolOption & { query?: string; connId?: string | Connection; uri?: string; schema?: DatasetSchema; nodeKey?: string; map?: NodeMap } = {},
   ): DatasetRef {
     const config = buildConfig({
       query: options.query || "",
@@ -477,7 +563,7 @@ export class Pipeline {
     // Parity anchor: the reference SDK annotates source schema hints,
     // and they survive normalization into the digest.
     if (config.query) config._schema_hint = "query_result";
-    return this.register("source_db", name, config, [], { nodeKey: options.nodeKey, kind: "dataset" });
+    return this.register("source_db", name, config, [], { nodeKey: options.nodeKey, kind: "dataset", map: options.map });
   }
 
   sourceApi(
@@ -490,6 +576,9 @@ export class Pipeline {
       /** The fetcher: "rest" (default) or another the server registers. */
       sourceType?: string;
       pool?: string;
+      /** Make the request once per item (ADR-050); `${item.column}` in
+       * the url, params, headers or body is that item's value. */
+      map?: NodeMap;
     } = {},
   ): NodeRef {
     const response = options.response || "dataset";
@@ -530,7 +619,7 @@ export class Pipeline {
       }
     }
     config._schema_hint = "api_response";
-    return this.register("source_api", name, config, [], { nodeKey: options.nodeKey, kind: response });
+    return this.register("source_api", name, config, [], { nodeKey: options.nodeKey, kind: response, map: options.map });
   }
 
   transform(name: string, input?: NodeRef, options: { rules?: unknown[]; nodeKey?: string } = {}): DatasetRef {
@@ -761,7 +850,7 @@ export class Pipeline {
     }), options.input ? [options.input] : [], { nodeKey: options.nodeKey, kind: "dataset" });
   }
 
-  code(name: string, input?: NodeRef, options: RetryOptions & PoolOption & { language?: "python" | "typescript"; script?: string; helpers?: Helpers; pythonPath?: string; nodePath?: string; maxMemoryMb?: number; maxCpuSeconds?: number; outputSchema?: DatasetSchema; nodeKey?: string } = {}): NodeRef {
+  code(name: string, input?: NodeRef, options: RetryOptions & PoolOption & { language?: "python" | "typescript"; script?: string; helpers?: Helpers; pythonPath?: string; nodePath?: string; maxMemoryMb?: number; maxCpuSeconds?: number; outputSchema?: DatasetSchema; nodeKey?: string; map?: NodeMap } = {}): NodeRef {
     return this.register("code", name, buildConfig({
       language: options.language || "python",
       script: `${helpersPreamble(options.helpers)}${options.script || ""}`,
@@ -772,7 +861,7 @@ export class Pipeline {
       max_cpu_seconds: options.maxCpuSeconds,
       output_schema: options.outputSchema,
       pool: options.pool,
-    }), input ? [input] : [], { nodeKey: options.nodeKey });
+    }), input ? [input] : [], { nodeKey: options.nodeKey, map: options.map });
   }
 
   /** Run a trusted Bash command and pass the input dataset through unchanged. */
@@ -830,6 +919,7 @@ export class Pipeline {
       nodeKey: options.nodeKey,
       kind: "dataset",
       taskInterface: buildTaskInterface(options.input, options.output),
+      map: options.map,
     });
   }
 

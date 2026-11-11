@@ -139,6 +139,44 @@ real AST inspection, which this SDK's "no bytecode inspection" v1
 contract does not have, so it still surfaces as a remote
 `ReferenceError` inside the worker rather than a local error.
 
+### Running a node once per item (`map`, ADR-050)
+
+`code`, `sourceDb`, `sourceApi` and `task` take a `map` option. The node
+then runs once per row of `over` instead of once over its whole input:
+each row is its own item, with its own status, items run in parallel, and
+the node's output is every item's output combined. It compiles to the
+node's `map` block, the same IR the Python SDK's `map=Map(...)` emits.
+
+```ts
+const customers = pipeline.sourceDb("Customers", { query: "SELECT id, region FROM customers", connId: "shop" });
+
+// One query per customer; ${item.id} is bound as a query parameter.
+const orders = pipeline.sourceDb("Orders", {
+  query: "SELECT * FROM orders WHERE customer_id = ${item.id}",
+  connId: "shop",
+  map: { over: customers, key: "id", maxParallel: 8 },
+});
+
+// In a mapped task, rows holds the one item.
+pipeline.task("Score", customers, function score(rows) {
+  return { columns: ["id", "region"], rows: [{ id: rows[0].id, region: rows[0].region }] };
+}, { map: { over: customers, key: "id", onItemFailure: "continue" } });
+```
+
+| `map` | Meaning |
+|---|---|
+| `over` | The node whose rows are the items, or a record of name to node to zip several collections item by item. The edge from each is added for you. |
+| `key` | The column that identifies each item. Values must be present and unique. Without it, items are numbered by position. |
+| `maxItems` | The most items the node may fan out into; more fail the node. Server default 1000. |
+| `maxParallel` | How many items run at once. Server default 4. |
+| `onItemFailure` | `"fail"` (default), `"continue"` (run all, then fail if any failed) or `"skip"` (leave failed items out). |
+
+Not to be confused with `pipeline.map(fn)`, which applies a function to
+each row inside one node. Deploy refuses a pipeline that maps unless the
+server lists `node-map` in `/api/capabilities`, and a `map` on a type
+outside its `map_node_types`: a server from before mapping would ignore
+the block and run the node once over everything.
+
 ### Waits, contracts, shell commands and migrations
 
 `wait` parks a run until a condition holds without holding a concurrency

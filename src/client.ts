@@ -22,6 +22,8 @@ export type Capabilities = {
   nodeTypes?: string[];
   /** Node types the server's operator disabled. */
   disabledNodeTypes?: string[];
+  /** Node types a `map` block may be put on (ADR-050), when reported. */
+  mapNodeTypes?: string[];
   codeLanguages?: string[];
   codeJsWrapperVersion?: number;
   raw: Record<string, unknown>;
@@ -227,11 +229,16 @@ export class Client {
     if (disabled !== undefined && disabled !== null && (!Array.isArray(disabled) || disabled.some((t: unknown) => typeof t !== "string" || !t))) {
       throw new APIError("Malformed server capabilities", 200, raw);
     }
+    const mapTypes = raw.map_node_types;
+    if (mapTypes !== undefined && mapTypes !== null && (!Array.isArray(mapTypes) || mapTypes.some((t: unknown) => typeof t !== "string" || !t))) {
+      throw new APIError("Malformed server capabilities", 200, raw);
+    }
     return {
       supportedIrVersions: raw.supported_ir_versions,
       supportedExecutionFeatures: raw.supported_execution_features ?? undefined,
       nodeTypes: nodeTypeCapabilities ? Object.keys(nodeTypeCapabilities) : undefined,
       disabledNodeTypes: nodeTypeCapabilities || disabled ? disabled ?? [] : undefined,
+      mapNodeTypes: mapTypes ?? undefined,
       codeLanguages: raw.code_languages,
       codeJsWrapperVersion: raw.code_js_wrapper_version,
       raw,
@@ -262,6 +269,14 @@ export class Client {
       if (caps.disabledNodeTypes?.includes(type)) problems.push(`${type} nodes are disabled on this server`);
       else if (caps.nodeTypes && !caps.nodeTypes.includes(type) && !UNLISTED_NODE_TYPES.has(type)) {
         problems.push(`this server does not know the ${type} node type; upgrade the server`);
+      }
+    }
+    if (caps.mapNodeTypes) {
+      const mapped = [...new Set(ir.nodes.filter((node) => node.config.map !== undefined).map((node) => node.type))].sort();
+      for (const type of mapped) {
+        if (!caps.mapNodeTypes.includes(type)) {
+          problems.push(`this server cannot map ${type} nodes (it maps ${[...caps.mapNodeTypes].sort().join(", ") || "none"})`);
+        }
       }
     }
     if (problems.length) throw new APIError(`Pipeline cannot run on this server: ${problems.join("; ")}`, 409, caps.raw);

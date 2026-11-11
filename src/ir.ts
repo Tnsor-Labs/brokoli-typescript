@@ -259,6 +259,9 @@ export const RUNTIME_EXISTENCE_FEATURES: readonly string[] = [
   "task-runtime-v1",
   "task-bundle-v2",
   "task-ports-v1",
+  // ADR-050: a server too old to list features predates mapping, and
+  // would ignore a map block and run the node once over its whole input.
+  "node-map",
 ];
 
 /** The execution features a compiled pipeline depends on — must match
@@ -294,6 +297,9 @@ export function requiredExecutionFeatures(ir: PipelineIR): string[] {
     // a strict decoder 400 it.
     if (node.interface !== undefined) features.add("task-interface-v1");
     if (node.config.expansion) features.add("dynamic-expansion");
+    // ADR-050: a server without node-map ignores the block and runs the
+    // node once over its whole input -- a green run and a wrong answer.
+    if (node.config.map !== undefined) features.add("node-map");
     if (node.type === "union") features.add("union");
     if (node.type === "dataset_map") features.add("dataset-map");
     if (node.type === "dataset_filter") features.add("dataset-filter");
